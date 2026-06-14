@@ -16,7 +16,7 @@ python -m pip install --upgrade pip
 echo.
 
 echo [2/4] Basic libraries...
-python -m pip install "pyqt5>=5.15" "mss>=9.0" "pillow>=10.0" "numpy>=1.24" "pypinyin>=0.49" "jieba>=0.42" "keyboard>=0.13.5"
+python -m pip install "pyqt5>=5.15" "mss>=9.0" "pillow>=10.0" "numpy>=1.24,<2.0" "pypinyin>=0.49" "jieba>=0.42" "keyboard>=0.13.5"
 if %errorlevel% neq 0 (
     echo [ERROR] Basic libraries failed to install!
     pause
