@@ -14,7 +14,22 @@ def init_ocr() -> bool:
     try:
         from paddleocr import PaddleOCR
         logger.info("[OCR] Trying PaddleOCR...")
-        OCR_ENGINE = PaddleOCR(use_angle_cls=True, lang='ch', use_gpu=False, show_log=False, enable_mkldnn=False)
+        init_attempts = [
+            {"use_angle_cls": True, "lang": "ch", "use_gpu": False, "show_log": False, "enable_mkldnn": False},
+            {"use_angle_cls": True, "lang": "ch", "show_log": False, "enable_mkldnn": False},
+            {"use_angle_cls": True, "lang": "ch"},
+            {"lang": "ch"},
+        ]
+        last_error = None
+        for kwargs in init_attempts:
+            try:
+                OCR_ENGINE = PaddleOCR(**kwargs)
+                break
+            except Exception as attempt_error:
+                last_error = attempt_error
+                OCR_ENGINE = None
+        if OCR_ENGINE is None:
+            raise last_error
         dummy = np.zeros((64, 200, 3), dtype=np.uint8)
         try: OCR_ENGINE.ocr(dummy, cls=True)
         except TypeError: OCR_ENGINE.ocr(dummy)

@@ -1,6 +1,7 @@
 import os
 import logging
 import warnings
+import re
 from functools import lru_cache
 
 logger = logging.getLogger("OCRApp")
@@ -18,21 +19,54 @@ except Exception as e:
 
 # Load CC-CEDICT for full character/word coverage
 CEDICT = {}  # simplified -> [{'pinyin': str, 'meanings': list}]
+
+def _load_local_cedict(file_path):
+    line_re = re.compile(r"^(\S+)\s+(\S+)\s+\[([^\]]+)\]\s+/(.*)/$")
+    with open(file_path, "r", encoding="utf-8") as cedict_file:
+        for raw_line in cedict_file:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            match = line_re.match(line)
+            if not match:
+                continue
+            _traditional, simplified, pinyin, meanings_text = match.groups()
+            meanings = [meaning for meaning in meanings_text.split("/") if meaning]
+            CEDICT.setdefault(simplified, []).append({
+                "pinyin": pinyin,
+                "meanings": meanings
+            })
+
 try:
-    from cedict_utils.cedict import CedictParser
     _local_cedict = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cedict_ts.u8")
-    if os.path.exists(_local_cedict):
+    try:
+        from cedict_utils.cedict import CedictParser
+    except Exception:
+        CedictParser = None
+
+    if os.path.exists(_local_cedict) and CedictParser is None:
+        logger.info(f"[CEDICT] Loading local file without cedict_utils: {_local_cedict}")
+        _load_local_cedict(_local_cedict)
+    elif os.path.exists(_local_cedict):
         logger.info(f"[CEDICT] Loading local updated file: {_local_cedict}")
         _parser = CedictParser(file_path=_local_cedict)
-    else:
+        _entries = _parser.parse()
+        for _e in _entries:
+            _k = _e.simplified
+            if _k not in CEDICT:
+                CEDICT[_k] = []
+            CEDICT[_k].append({'pinyin': _e.pinyin, 'meanings': _e.meanings})
+    elif CedictParser is not None:
         logger.info("[CEDICT] Using default package file...")
         _parser = CedictParser()
-    _entries = _parser.parse()
-    for _e in _entries:
-        _k = _e.simplified
-        if _k not in CEDICT:
-            CEDICT[_k] = []
-        CEDICT[_k].append({'pinyin': _e.pinyin, 'meanings': _e.meanings})
+        _entries = _parser.parse()
+        for _e in _entries:
+            _k = _e.simplified
+            if _k not in CEDICT:
+                CEDICT[_k] = []
+            CEDICT[_k].append({'pinyin': _e.pinyin, 'meanings': _e.meanings})
+    else:
+        logger.warning("[CEDICT] No local cedict_ts.u8 file and cedict_utils is not installed")
     logger.info(f"[CEDICT] Dictionary loaded: {len(CEDICT)} unique words")
 except Exception as _ce:
     logger.error(f"[CEDICT] Failed to load: {_ce}")

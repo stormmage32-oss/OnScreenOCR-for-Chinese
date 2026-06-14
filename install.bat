@@ -120,7 +120,7 @@ if errorlevel 1 (
 echo.
 
 echo [4/4] PaddleOCR...
-"%OCR_PYTHON%" -m pip install "paddleocr>=2.7"
+"%OCR_PYTHON%" -m pip install --upgrade --force-reinstall "paddleocr>=2.7,<3.0"
 if errorlevel 1 (
     echo [ERROR] PaddleOCR failed to install!
     pause
