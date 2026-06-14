@@ -8,3 +8,4 @@ saved_words.txt
 anki_export.csv
 *.bak
 .DS_Store
+.venv/
