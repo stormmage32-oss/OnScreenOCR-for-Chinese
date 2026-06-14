@@ -47,7 +47,11 @@ def main():
             install_bat = os.path.join(base_dir, "install.bat")
             if os.path.exists(install_bat):
                 # Run install.bat in a new console window and wait for it
-                os.system(f'start /wait cmd /c "{install_bat}"')
+                subprocess.run(
+                    ["cmd", "/c", install_bat],
+                    cwd=base_dir,
+                    check=False
+                )
                 
                 # Check again if installation was successful
                 if not check_dependencies():
