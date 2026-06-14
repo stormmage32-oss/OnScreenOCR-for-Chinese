@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+config.json
+saved_words.json
+saved_words.txt
+anki_export.csv
+*.bak
+.DS_Store
