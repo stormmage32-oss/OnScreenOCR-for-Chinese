@@ -92,12 +92,22 @@ if not exist "%~dp0.venv\Scripts\python.exe" (
 
 set "OCR_PYTHON=%~dp0.venv\Scripts\python.exe"
 
-echo [1/4] updating pip...
-"%OCR_PYTHON%" -m pip install --upgrade pip
+echo [1/4] Checking Python packaging tools...
+"%OCR_PYTHON%" -m pip --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] pip update failed!
+    echo [ERROR] pip is not available in the virtual environment.
     pause
     exit /b 1
+)
+"%OCR_PYTHON%" -c "import setuptools, wheel" >nul 2>&1
+if errorlevel 1 (
+    echo Installing missing packaging tools...
+    "%OCR_PYTHON%" -m pip install setuptools wheel
+    if errorlevel 1 (
+        echo [ERROR] Python packaging tools install failed!
+        pause
+        exit /b 1
+    )
 )
 echo.
 
@@ -120,7 +130,7 @@ if errorlevel 1 (
 echo.
 
 echo [4/4] PaddleOCR...
-"%OCR_PYTHON%" -m pip install --upgrade --force-reinstall "paddleocr>=2.7,<3.0"
+"%OCR_PYTHON%" -m pip install "paddleocr>=2.7,<3.0"
 if errorlevel 1 (
     echo [ERROR] PaddleOCR failed to install!
     pause
