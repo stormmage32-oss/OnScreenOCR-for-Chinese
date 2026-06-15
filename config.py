@@ -2,16 +2,19 @@ import os, json
 from PyQt5.QtCore import QObject, pyqtSignal
 import keyboard
 import logging
+from app_paths import install_dir_path, user_data_path
 
 logger = logging.getLogger("OCRApp")
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+CONFIG_FILE = user_data_path("config.json")
+LEGACY_CONFIG_FILE = install_dir_path("config.json")
 
 def load_config():
     defaults = {"hotkey": "alt+s", "manga_mode": False, "deepl_enabled": False, "deepl_api_key": ""}
-    if os.path.exists(CONFIG_FILE):
+    load_path = CONFIG_FILE if os.path.exists(CONFIG_FILE) else LEGACY_CONFIG_FILE
+    if os.path.exists(load_path):
         try:
-            with open(CONFIG_FILE, 'r') as f:
+            with open(load_path, 'r') as f:
                 cfg = json.load(f)
                 for k, v in defaults.items():
                     if k not in cfg:
@@ -21,6 +24,7 @@ def load_config():
     return defaults
 
 def save_config(cfg):
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     with open(CONFIG_FILE, 'w') as f:
         json.dump(cfg, f)
 

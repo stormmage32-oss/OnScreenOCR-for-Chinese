@@ -1,8 +1,10 @@
 import os
+import sys
 import logging
 import numpy as np
 import mss
 from PyQt5.QtCore import QThread, pyqtSignal
+from app_paths import bundled_path
 
 logger = logging.getLogger("OCRApp")
 
@@ -12,6 +14,9 @@ OCR_TYPE = None  # 'paddle' | 'easyocr' | 'rapid' | None
 def init_ocr() -> bool:
     global OCR_ENGINE, OCR_TYPE
     try:
+        paddleocr_data_dir = bundled_path("paddleocr")
+        if os.path.isdir(paddleocr_data_dir) and paddleocr_data_dir not in sys.path:
+            sys.path.insert(0, paddleocr_data_dir)
         from paddleocr import PaddleOCR
         logger.info("[OCR] Trying PaddleOCR...")
         init_attempts = [
@@ -37,7 +42,7 @@ def init_ocr() -> bool:
         logger.info("[OCR] PaddleOCR ready!")
         return True
     except Exception as e:
-        logger.warning(f"[WARNING] PaddleOCR failed: {e}")
+        logger.exception(f"[WARNING] PaddleOCR failed: {e}")
         return False
 
 def run_ocr(image: np.ndarray) -> list:

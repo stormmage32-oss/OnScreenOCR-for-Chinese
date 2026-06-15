@@ -3,6 +3,7 @@ import logging
 import warnings
 import re
 from functools import lru_cache
+from app_paths import bundled_path
 
 logger = logging.getLogger("OCRApp")
 
@@ -38,7 +39,7 @@ def _load_local_cedict(file_path):
             })
 
 try:
-    _local_cedict = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cedict_ts.u8")
+    _local_cedict = bundled_path("cedict_ts.u8")
     try:
         from cedict_utils.cedict import CedictParser
     except Exception:

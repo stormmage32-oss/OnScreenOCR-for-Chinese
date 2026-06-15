@@ -9,3 +9,5 @@ anki_export.csv
 *.bak
 .DS_Store
 .venv/
+.build-venv/
+installer_output/

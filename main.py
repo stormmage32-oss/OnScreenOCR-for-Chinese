@@ -4,6 +4,7 @@ import logging
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
+from app_paths import user_data_path
 
 # Prevent DLL conflicts by importing ML libraries before PyQt5
 try: import torch
@@ -29,7 +30,7 @@ if sys.platform == 'win32':
     os.environ['FLAGS_use_mkldnn'] = '0'
     os.environ['FLAGS_use_dnnl'] = '0'
 
-LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ocr_app.log")
+LOG_FILE = user_data_path("ocr_app.log")
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',

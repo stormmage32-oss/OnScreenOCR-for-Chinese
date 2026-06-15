@@ -6,25 +6,30 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QList
                              QPushButton, QFrame, QLabel, QScrollArea, QWidget, QListWidgetItem, QApplication)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
+from app_paths import install_dir_path, user_data_path
 
 logger = logging.getLogger("OCRApp")
 
-SAVE_FILE_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_words.json")
-SAVE_FILE_TXT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_words.txt")
+SAVE_FILE_JSON = user_data_path("saved_words.json")
+SAVE_FILE_TXT = user_data_path("saved_words.txt")
+LEGACY_SAVE_FILE_JSON = install_dir_path("saved_words.json")
+LEGACY_SAVE_FILE_TXT = install_dir_path("saved_words.txt")
 
 def migrate_and_load_saved_words():
     words = []
-    if os.path.exists(SAVE_FILE_JSON):
+    load_json = SAVE_FILE_JSON if os.path.exists(SAVE_FILE_JSON) else LEGACY_SAVE_FILE_JSON
+    if os.path.exists(load_json):
         try:
-            with open(SAVE_FILE_JSON, 'r', encoding='utf-8') as f:
+            with open(load_json, 'r', encoding='utf-8') as f:
                 words = json.load(f)
         except Exception as e:
             logger.error(f"Error loading JSON saved words: {e}")
             
-    if os.path.exists(SAVE_FILE_TXT):
+    load_txt = SAVE_FILE_TXT if os.path.exists(SAVE_FILE_TXT) else LEGACY_SAVE_FILE_TXT
+    if os.path.exists(load_txt):
         try:
             migrated = False
-            with open(SAVE_FILE_TXT, 'r', encoding='utf-8') as f:
+            with open(load_txt, 'r', encoding='utf-8') as f:
                 for line in f:
                     line = line.strip()
                     if not line: continue
@@ -40,15 +45,17 @@ def migrate_and_load_saved_words():
                             migrated = True
             
             if migrated:
+                os.makedirs(os.path.dirname(SAVE_FILE_JSON), exist_ok=True)
                 with open(SAVE_FILE_JSON, 'w', encoding='utf-8') as f:
                     json.dump(words, f, ensure_ascii=False, indent=2)
                 logger.info("[MIGRATION] saved_words.txt migrated to json!")
                 
             try:
                 bak_path = SAVE_FILE_TXT + ".bak"
-                if os.path.exists(bak_path):
+                if load_txt == SAVE_FILE_TXT and os.path.exists(bak_path):
                     os.remove(bak_path)
-                os.rename(SAVE_FILE_TXT, bak_path)
+                if load_txt == SAVE_FILE_TXT:
+                    os.rename(SAVE_FILE_TXT, bak_path)
             except Exception as re_err:
                 logger.error(f"Error renaming txt: {re_err}")
         except Exception as e:
@@ -68,6 +75,7 @@ def save_word(text: str, py: str, meanings: str = ''):
         
     words.append({"word": text, "pinyin": py, "meanings": meanings, "timestamp": ts})
     try:
+        os.makedirs(os.path.dirname(SAVE_FILE_JSON), exist_ok=True)
         with open(SAVE_FILE_JSON, 'w', encoding='utf-8') as f:
             json.dump(words, f, ensure_ascii=False, indent=2)
         return True
@@ -214,6 +222,7 @@ class WordNotebookWindow(QDialog):
 
     def _save_to_disk(self):
         try:
+            os.makedirs(os.path.dirname(SAVE_FILE_JSON), exist_ok=True)
             with open(SAVE_FILE_JSON, 'w', encoding='utf-8') as f:
                 json.dump(self.words_data, f, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -221,7 +230,7 @@ class WordNotebookWindow(QDialog):
 
     def export_anki(self):
         if not self.words_data: return
-        export_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "anki_export.csv")
+        export_path = user_data_path("anki_export.csv")
         try:
             with open(export_path, 'w', encoding='utf-8') as f:
                 for w in self.words_data:

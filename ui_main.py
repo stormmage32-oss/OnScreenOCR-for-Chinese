@@ -152,7 +152,7 @@ class MainWindow(QMainWindow):
                                       "border-radius:8px;padding:10px 16px;font-size:13px;")
             self.btn_r.setEnabled(True); self.btn_f.setEnabled(True)
         else:
-            self.status.setText("Failed to load OCR! Run install.bat.")
+            self.status.setText("Failed to load OCR. Check the log file in AppData.")
             self.status.setStyleSheet("color:#C65911;background:#FCE4D6;border:1px solid #F4B084;"
                                       "border-radius:8px;padding:10px 16px;font-size:13px;")
 
