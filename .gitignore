@@ -21,4 +21,3 @@ anki_export.csv
 *.bak
 .DS_Store
 installer_output/
-installer/

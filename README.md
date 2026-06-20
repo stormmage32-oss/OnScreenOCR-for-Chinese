@@ -16,6 +16,7 @@ A Pleco-style screen reader for Windows that allows you to easily capture and re
 
 - Windows OS
 - For `START.bat`: Python 3.8 to 3.12 installed and added to PATH.
+- For setup builds: Python 3.10 or 3.11 and Inno Setup 6 on the build machine.
 
 ## Installation & Usage (Easiest Way)
 
@@ -35,9 +36,15 @@ If you prefer to run things manually:
 1. Run `install.bat` to install the dependencies via pip.
 2. Run `run.bat` to start the application.
 
-## Build Executable
+## Build Setup
 
-To create the lightweight launcher executable, double-click `build_exe.bat`. The generated files are written to `build/`, `dist/`, and `ChineseScreenOCR.exe`; these are build outputs and are intentionally ignored by git.
+To create a Windows setup installer, double-click `build_setup.bat` or `build_installer.bat`.
+
+The setup build creates an isolated `.build-venv`, bundles the full app into `dist/ChineseScreenOCR`, then writes the installer to `installer_output/ChineseScreenOCR-Setup.exe`.
+
+## Build Lightweight Executable
+
+`build_exe.bat` only creates the small launcher executable. PyInstaller also creates `build/` and `dist/` folders while doing this, and the script copies `dist/ChineseScreenOCR.exe` to the project root. This is not the setup installer.
 
 ### Troubleshooting
 

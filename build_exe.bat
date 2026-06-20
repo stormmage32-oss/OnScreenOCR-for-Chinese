@@ -6,6 +6,9 @@ echo ========================================================
 echo    CHINESE SCREEN OCR - LIGHTWEIGHT EXE BUILDER
 echo ========================================================
 echo.
+echo This does NOT create a setup installer.
+echo For installer_output\ChineseScreenOCR-Setup.exe, run build_setup.bat.
+echo.
 
 echo [1/2] Installing PyInstaller...
 python -m pip install pyinstaller
