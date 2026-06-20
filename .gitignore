@@ -2,12 +2,23 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.log
+
+# Local environments
+.venv/
+.build-venv/
+
+# Build outputs
+build/
+dist/
+*.exe
+*.zip
+
+# Runtime user data
 config.json
 saved_words.json
 saved_words.txt
 anki_export.csv
 *.bak
 .DS_Store
-.venv/
-.build-venv/
 installer_output/
+installer/
