@@ -2,9 +2,9 @@ import numpy as np
 from PyQt5.QtWidgets import (QWidget, QMainWindow, QVBoxLayout, QHBoxLayout, QLabel, 
                              QPushButton, QFrame, QScrollArea, QApplication, QRubberBand)
 from PyQt5.QtCore import Qt, QPoint, QRect, QSize, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont, QColor, QBrush, QPen, QImage, QPixmap, QPainter
+from PyQt5.QtGui import QFont, QFontMetrics, QColor, QBrush, QPen, QImage, QPixmap, QPainter
 
-from dictionary import lookup_hsk, HSK_COLORS, get_pinyin
+from dictionary import lookup_hsk, HSK_COLORS, get_pinyin, get_char_weight
 from word_notebook import save_word
 from ui_components import HoverTooltip, DetailPopup, _clamp_popup
 
@@ -224,14 +224,18 @@ class OCRCanvas(QLabel):
         if self.hovered_idx != -1: self.hovered_idx = -1; self._repaint()
 
 class OverlayWindow(QMainWindow):
-    def __init__(self, image: np.ndarray, results: list, main_win=None):
+    def __init__(self, image: np.ndarray, results: list, main_win=None, screen_rect=None):
         super().__init__()
         self.main_win = main_win
+        self.screen_rect = screen_rect
         self.setWindowTitle(f"OCR Results  {len(results)} texts")
         self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
         self.setStyleSheet("QMainWindow{background:#FAF4EB;}")
         h, w = image.shape[:2]
-        self.resize(min(w+40,1440), min(h+80,960))
+        if screen_rect:
+            self.setGeometry(screen_rect)
+        else:
+            self.resize(min(w+40,1440), min(h+80,960))
         self._build(image, results)
 
     def _build(self, image, results):
@@ -280,3 +284,138 @@ class OverlayWindow(QMainWindow):
                 f"padding:5px 14px;font-size:12px;{bw}}}"
                 f"QPushButton:hover{{background:{bg}ee;}}"
                 f"QPushButton:disabled{{background:#E8DCCC;color:#B0A090;border:none;}}")
+
+class PinyinOverlayWindow(QWidget):
+    def __init__(self, results: list, screen_rect: QRect, image=None, parent=None):
+        super().__init__(parent)
+        self.results = results
+        self.screen_rect = screen_rect
+        self.image = image
+        self.setWindowFlags(
+            Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.Tool
+            | Qt.WindowTransparentForInput
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setGeometry(screen_rect)
+
+    @staticmethod
+    def _cjk_text(text: str) -> str:
+        return ''.join(ch for ch in text if '\u3400' <= ch <= '\u9fff')
+
+    @staticmethod
+    def _is_cjk(ch: str) -> bool:
+        return '\u3400' <= ch <= '\u9fff'
+
+    @staticmethod
+    def _char_pinyin(chars: str) -> list:
+        try:
+            from pypinyin import pinyin, Style
+            return [item[0] for item in pinyin(chars, style=Style.TONE)]
+        except Exception:
+            joined = get_pinyin(chars)
+            return joined.split() if joined else []
+
+    def _font_for(self, py: str, box_w: int, box_h: int):
+        target_w = max(3, box_w - 1)
+        base_size = max(5, min(10, int(box_h * 0.38)))
+        for size in range(base_size, 3, -1):
+            for stretch in (100, 90, 80, 70, 60, 50):
+                font = QFont("Segoe UI", size, QFont.Normal)
+                font.setStretch(stretch)
+                font.setLetterSpacing(QFont.AbsoluteSpacing, 0)
+                fm = QFontMetrics(font)
+                if fm.horizontalAdvance(py) <= target_w:
+                    return font, fm
+        font = QFont("Segoe UI", 4, QFont.Normal)
+        font.setStretch(45)
+        font.setLetterSpacing(QFont.AbsoluteSpacing, 0)
+        return font, QFontMetrics(font)
+
+    def _label_y(self, y: int, h: int, th: int, margin: int) -> int:
+        ly = y - th + 2
+        if ly < margin:
+            ly = y + 1
+        return max(margin, min(ly, self.height() - th - margin))
+
+    def _adaptive_colors(self, rect: QRect):
+        if self.image is None:
+            return QColor(235, 45, 35, 245), QColor(255, 248, 230, 235)
+
+        h, w = self.image.shape[:2]
+        x1 = max(0, min(rect.left(), w - 1))
+        y1 = max(0, min(rect.top(), h - 1))
+        x2 = max(x1 + 1, min(rect.right() + 1, w))
+        y2 = max(y1 + 1, min(rect.bottom() + 1, h))
+        patch = self.image[y1:y2, x1:x2]
+        if patch.size == 0:
+            return QColor(235, 45, 35, 245), QColor(255, 248, 230, 235)
+
+        lum = float((0.2126 * patch[:, :, 0] + 0.7152 * patch[:, :, 1] + 0.0722 * patch[:, :, 2]).mean())
+        if lum < 95:
+            return QColor(255, 225, 40, 250), QColor(0, 0, 0, 235)
+        if lum < 165:
+            return QColor(0, 235, 255, 250), QColor(0, 0, 0, 230)
+        return QColor(235, 35, 30, 250), QColor(255, 250, 225, 240)
+
+    def _iter_char_labels(self, res):
+        text = res.get("text", "").strip()
+        cjk = self._cjk_text(text)
+        if not cjk:
+            return []
+        syllables = self._char_pinyin(cjk)
+        if not syllables:
+            return []
+
+        b = res["bbox"]
+        total_weight = sum(get_char_weight(ch) for ch in text) or len(text) or 1
+        cursor = float(b["x"])
+        cjk_index = 0
+        labels = []
+
+        for ch in text:
+            weight = get_char_weight(ch)
+            char_w = max(1.0, b["w"] * (weight / total_weight))
+            if self._is_cjk(ch) and cjk_index < len(syllables):
+                labels.append({
+                    "pinyin": syllables[cjk_index],
+                    "x": int(round(cursor)),
+                    "y": b["y"],
+                    "w": int(round(char_w)),
+                    "h": b["h"],
+                })
+                cjk_index += 1
+            cursor += char_w
+
+        return labels
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        margin = 4
+
+        for res in sorted(self.results, key=lambda item: (item["bbox"]["y"], item["bbox"]["x"])):
+            for label in self._iter_char_labels(res):
+                py = label["pinyin"]
+                x, y, w, h = label["x"], label["y"], label["w"], label["h"]
+                font, fm = self._font_for(py, w, h)
+                p.setFont(font)
+                th = fm.height() + 1
+                lx = max(margin, min(x, self.width() - max(w, 1) - margin))
+                ly = self._label_y(y, h, th, margin)
+                rect = QRect(lx, ly, max(1, w), th)
+
+                text_rect = rect.adjusted(1, 0, -1, 0)
+                fill, outline = self._adaptive_colors(rect)
+                p.save()
+                p.setClipRect(rect)
+                p.setPen(outline)
+                for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    p.drawText(text_rect.translated(dx, dy), Qt.AlignCenter, py)
+                p.setPen(fill)
+                p.drawText(text_rect, Qt.AlignCenter, py)
+                p.restore()
+
+        p.end()

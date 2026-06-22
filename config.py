@@ -10,7 +10,13 @@ CONFIG_FILE = user_data_path("config.json")
 LEGACY_CONFIG_FILE = install_dir_path("config.json")
 
 def load_config():
-    defaults = {"hotkey": "alt+s", "manga_mode": False, "deepl_enabled": False, "deepl_api_key": ""}
+    defaults = {
+        "hotkey": "alt+s",
+        "pinyin_hotkey": "alt+p",
+        "manga_mode": False,
+        "deepl_enabled": False,
+        "deepl_api_key": ""
+    }
     load_path = CONFIG_FILE if os.path.exists(CONFIG_FILE) else LEGACY_CONFIG_FILE
     if os.path.exists(load_path):
         try:

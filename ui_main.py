@@ -4,13 +4,13 @@ import logging
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QPushButton, QCheckBox, QLineEdit, QDialog,
                              QMessageBox, QProgressDialog, QSystemTrayIcon, QMenu, QAction, QApplication)
-from PyQt5.QtCore import Qt, QObject, pyqtSignal, QThread, QTimer
-from PyQt5.QtGui import QFont, QIcon, QPixmap, QPainter, QBrush, QColor
+from PyQt5.QtCore import Qt, QObject, pyqtSignal, QThread, QTimer, QRect
+from PyQt5.QtGui import QFont, QIcon, QPixmap, QPainter, QBrush, QColor, QCursor
 
 from config import load_config, save_config
 from ocr_engine import init_ocr, take_screenshot, OCRWorker
 from dictionary import segment_ocr_results
-from ui_overlay import RegionSelector, OverlayWindow
+from ui_overlay import RegionSelector, OverlayWindow, PinyinOverlayWindow
 from word_notebook import WordNotebookWindow
 
 logger = logging.getLogger("OCRApp")
@@ -45,9 +45,10 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Chinese Screen OCR")
-        self.setFixedSize(480, 440)
+        self.setFixedSize(520, 500)
         self.setStyleSheet("QMainWindow,QWidget{background:#FAF4EB;color:#4A3F35;}")
-        self.ocr_ready = False; self.overlay = None; self._worker = None
+        self.ocr_ready = False; self.overlay = None; self.pinyin_overlay = None; self._worker = None
+        self._active_screen_rect = None; self._ocr_mode = "normal"
         self.config = load_config()
         self._build(); self._start_init()
         self._setup_hotkey()
@@ -119,6 +120,19 @@ class MainWindow(QMainWindow):
         hl.addWidget(btn_hk)
         hl.addStretch()
         vb.addLayout(hl)
+
+        phl = QHBoxLayout()
+        phl.addStretch()
+        self.lbl_phk = QLabel(f"Pinyin Overlay Hotkey: [ {self.config.get('pinyin_hotkey', 'alt+p')} ]")
+        self.lbl_phk.setStyleSheet("color:#8B7D6B;font-size:12px;")
+        phl.addWidget(self.lbl_phk)
+        btn_phk = QPushButton("Change")
+        btn_phk.setStyleSheet(BTN_S)
+        btn_phk.setFixedSize(70, 24)
+        btn_phk.clicked.connect(self._change_pinyin_hotkey)
+        phl.addWidget(btn_phk)
+        phl.addStretch()
+        vb.addLayout(phl)
         
         vb.addStretch()
         hint = QLabel("Hint: double click in selection screen = full screen  |  ESC = cancel")
@@ -160,8 +174,19 @@ class MainWindow(QMainWindow):
         self.btn_r.setEnabled(enabled and self.ocr_ready)
         self.btn_f.setEnabled(enabled and self.ocr_ready)
 
+    def _screen_rect_for_action(self):
+        pos = QCursor.pos()
+        screen = QApplication.screenAt(pos)
+        if screen is None and self.isVisible():
+            screen = QApplication.screenAt(self.frameGeometry().center())
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        return screen.geometry() if screen else QRect()
+
     def _start_region(self):
         self._set_buttons(False)
+        self._ocr_mode = "normal"
+        self._active_screen_rect = None
         self.hide(); QTimer.singleShot(250, self._show_sel)
 
     def _show_sel(self):
@@ -175,16 +200,24 @@ class MainWindow(QMainWindow):
 
     def _start_full(self):
         self._set_buttons(False)
-        screen = QApplication.primaryScreen()
-        s = screen.geometry()
+        s = self._screen_rect_for_action()
+        self._active_screen_rect = s
+        self._ocr_mode = "normal"
         self._on_region(s.x(), s.y(), s.width(), s.height())
 
     def _on_region(self, x, y, w, h):
+        selected = QRect(x, y, w, h)
+        self._active_screen_rect = None
+        for screen in QApplication.screens():
+            if screen.geometry() == selected:
+                self._active_screen_rect = selected
+                break
         QTimer.singleShot(150, lambda: self._do_cap(x,y,w,h))
 
     def _do_cap(self, x, y, w, h):
         try: img = take_screenshot((x,y,w,h))
         except Exception as e:
+            self._ocr_mode = "normal"
             self.show(); self._set_buttons(True)
             QMessageBox.critical(self,"Error",f"Failed to take screenshot:\n{e}"); return
         self._run_ocr(img)
@@ -209,14 +242,22 @@ class MainWindow(QMainWindow):
         w = OCRWorker(img, manga_mode); self._worker = w
 
         def done(r):
-            prog.close(); self.show(); self._set_buttons(True)
+            prog.close()
+            if self._ocr_mode == "pinyin":
+                self._show_pinyin_overlay(r)
+                return
+            self.show(); self._set_buttons(True)
             if not r: QMessageBox.information(self,"Result","No text found."); return
             word_results = segment_ocr_results(r)
-            self.overlay = OverlayWindow(img, word_results, main_win=self)
+            self.overlay = OverlayWindow(img, word_results, main_win=self, screen_rect=self._active_screen_rect)
             self.overlay.show()
+            if self._active_screen_rect:
+                self.overlay.setGeometry(self._active_screen_rect)
+                self.overlay.showMaximized()
 
         def err(m):
             prog.close(); self.show(); self._set_buttons(True)
+            self._ocr_mode = "normal"
             QMessageBox.critical(self,"OCR Error", m)
 
         w.finished.connect(done); w.error.connect(err); w.start()
@@ -225,17 +266,68 @@ class MainWindow(QMainWindow):
         self.hk_listener = HotkeyListener()
         self.hk_listener.triggered.connect(self._start_full_from_hotkey)
         self.hk_listener.set_hotkey(self.config.get('hotkey', 'alt+s'))
+        self.pinyin_hk_listener = HotkeyListener()
+        self.pinyin_hk_listener.triggered.connect(self._toggle_pinyin_overlay_from_hotkey)
+        self.pinyin_hk_listener.set_hotkey(self.config.get('pinyin_hotkey', 'alt+p'))
         
     def _start_full_from_hotkey(self):
         if self.ocr_ready and self.btn_f.isEnabled():
             self._start_full()
 
+    def _toggle_pinyin_overlay_from_hotkey(self):
+        if self.pinyin_overlay is not None:
+            self.pinyin_overlay.close()
+            self.pinyin_overlay = None
+            self._set_buttons(True)
+            return
+        if self.ocr_ready and self.btn_f.isEnabled():
+            self._start_pinyin_overlay()
+
+    def _start_pinyin_overlay(self):
+        self._set_buttons(False)
+        self.hide()
+        self._ocr_mode = "pinyin"
+        s = self._screen_rect_for_action()
+        self._active_screen_rect = s
+        QTimer.singleShot(150, lambda: self._do_cap(s.x(), s.y(), s.width(), s.height()))
+
+    def _show_pinyin_overlay(self, results):
+        self._ocr_mode = "normal"
+        self._set_buttons(True)
+        if not results:
+            self.show()
+            QMessageBox.information(self, "Result", "No text found.")
+            return
+        if self.pinyin_overlay is not None:
+            self.pinyin_overlay.close()
+        self.pinyin_overlay = PinyinOverlayWindow(results, self._active_screen_rect, image=self._worker.image)
+        self.pinyin_overlay.destroyed.connect(lambda *_: setattr(self, "pinyin_overlay", None))
+        self.pinyin_overlay.show()
+
     def _change_hotkey(self):
+        self._read_hotkey(
+            title="Press new full screen hotkey...\n(e.g., Ctrl+Shift+A)",
+            config_key="hotkey",
+            label=self.lbl_hk,
+            label_prefix="Full Screen Hotkey",
+            listener=self.hk_listener,
+        )
+
+    def _change_pinyin_hotkey(self):
+        self._read_hotkey(
+            title="Press new pinyin overlay hotkey...\n(e.g., Ctrl+Shift+P)",
+            config_key="pinyin_hotkey",
+            label=self.lbl_phk,
+            label_prefix="Pinyin Overlay Hotkey",
+            listener=self.pinyin_hk_listener,
+        )
+
+    def _read_hotkey(self, title, config_key, label, label_prefix, listener):
         self.btn_r.setEnabled(False); self.btn_f.setEnabled(False)
         msg = QDialog(self, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         msg.setStyleSheet("background:#FAF4EB; border:1px solid #C08B5C; border-radius:10px;")
         l = QVBoxLayout(msg)
-        info = QLabel("Press new hotkey...\n(e.g., Ctrl+Shift+A)")
+        info = QLabel(title)
         info.setStyleSheet("color:#4A3F35; font-size:14px; padding:20px;")
         info.setAlignment(Qt.AlignCenter)
         l.addWidget(info)
@@ -254,10 +346,10 @@ class MainWindow(QMainWindow):
             msg.close()
             self._set_buttons(True)
             if hk:
-                self.config['hotkey'] = hk
+                self.config[config_key] = hk
                 save_config(self.config)
-                self.lbl_hk.setText(f"Full Screen Hotkey: [ {hk} ]")
-                self.hk_listener.set_hotkey(hk)
+                label.setText(f"{label_prefix}: [ {hk} ]")
+                listener.set_hotkey(hk)
         self.hk_reader.done.connect(on_done)
         self.hk_reader.start()
 
@@ -337,5 +429,7 @@ class MainWindow(QMainWindow):
             event.accept()
 
     def _exit_app(self):
+        if self.pinyin_overlay is not None:
+            self.pinyin_overlay.close()
         self.tray_icon.hide()
         QApplication.quit()

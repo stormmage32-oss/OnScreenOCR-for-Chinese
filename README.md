@@ -1,57 +1,111 @@
 # Chinese Screen OCR
 
-A Pleco-style screen reader for Windows that allows you to easily capture and read Chinese text from your screen. It features OCR (Optical Character Recognition) powered by PaddleOCR, dictionary lookups, Pinyin generation, HSK level tagging, and DeepL translation integration.
+Chinese Screen OCR is a small Windows tool for reading Chinese text directly from the screen. It is useful for games, manga, screenshots, videos, websites, and any app where the text is not easy to copy.
+
+You can scan a selected area, scan the full screen, click recognized words for dictionary details, or show a temporary pinyin overlay on top of the current screen.
+
+## Examples
+
+### Game Text
+
+![Chinese pinyin overlay on game text](EXAMPLES/Game.webp)
+
+The pinyin overlay can sit on top of game menus and dialogue without opening a separate result window. Press the overlay hotkey again to hide it and continue playing.
+
+### Manga / Vertical Text
+
+![Chinese OCR on manga text](EXAMPLES/Manga.webp)
+
+Manga mode helps with vertical Chinese text. You can scan a panel, inspect recognized words, and save vocabulary while reading.
 
 ## Features
 
-- **Quick Region Scan**: Select any part of your screen to instantly extract and read Chinese text.
-- **Full Screen Scan**: Scan the entire screen with a customizable global hotkey (default: `Alt+S`).
-- **Interactive Dictionary**: Click or hover over recognized words to see Pinyin, English meanings, and HSK levels.
-- **DeepL Integration**: Translate full sentences into English automatically (requires a free DeepL API key).
-- **Manga Mode**: Specialized support for vertical Chinese text.
-- **Vocabulary Notebook**: Save words you want to remember and export them to Anki for spaced repetition learning.
-- **Offline Capable**: After the initial download of the OCR models, the core recognition and dictionary features work entirely offline.
+- Region scan: drag over any part of the screen and run OCR on that area.
+- Full screen scan: scan the active screen with a hotkey.
+- Pinyin overlay: show pinyin directly above Chinese characters, then toggle it off with the same hotkey.
+- Adaptive pinyin color: overlay text changes color based on the screen area behind it for better contrast.
+- Dictionary popups: click recognized text to see pinyin, meanings, and HSK information.
+- Hover hints: hover over recognized boxes for quick word feedback.
+- Manga mode: rotate OCR handling for vertical Chinese text.
+- DeepL translation: optional sentence translation with your own DeepL API key.
+- Vocabulary notebook: save words and export them for Anki.
+- System tray support: keep the app running in the background.
+- Offline dictionary: CC-CEDICT and HSK data are bundled locally.
+
+## Hotkeys
+
+- Full screen scan: `Alt+S` by default.
+- Pinyin overlay: `Alt+P` by default.
+
+Both hotkeys can be changed from the main window.
 
 ## Requirements
 
-- Windows OS
-- For `START.bat`: Python 3.8 to 3.12 installed and added to PATH.
-- For setup builds: Python 3.10 or 3.11 and Inno Setup 6 on the build machine.
+- Windows.
+- Python 3.8 to 3.12 for running from source with `START.bat`.
+- Python 3.10 or 3.11 plus Inno Setup 6 if you want to build the setup installer.
 
-## Installation & Usage (Easiest Way)
+The first OCR run may download PaddleOCR model files. After that, normal OCR and dictionary lookup can work offline.
 
-For beginners or users who just want to run the app without hassle:
+## Quick Start
 
 1. Download or clone this repository.
-2. Double-click **`START.bat`**.
-3. On the first run, the script will automatically install all required dependencies (this may take a few minutes).
-4. The application will start immediately after the installation is complete. On subsequent runs, `START.bat` will skip the installation and launch the app instantly.
+2. Double-click `START.bat`.
+3. Wait for the first-time dependency setup to finish.
+4. Use `Select Region & Scan`, `Scan Full Screen`, or the hotkeys.
 
-> **Note:** The first time you scan an image, PaddleOCR will download its lightweight AI models. This is a one-time process and will take 1-3 minutes depending on your internet connection.
+On later runs, `START.bat` reuses the local `.venv` and starts faster.
 
-## Manual Execution
+## Manual Run
 
-If you prefer to run things manually:
+If you prefer doing the steps yourself:
 
-1. Run `install.bat` to install the dependencies via pip.
-2. Run `run.bat` to start the application.
+1. Run `install.bat`.
+2. Run `run.bat`.
 
-## Build Setup
+## Building
 
-To create a Windows setup installer, double-click `build_setup.bat` or `build_installer.bat`.
+### Setup Installer
 
-The setup build creates an isolated `.build-venv`, bundles the full app into `dist/ChineseScreenOCR`, then writes the installer to `installer_output/ChineseScreenOCR-Setup.exe`.
+To create a Windows setup installer, double-click:
 
-## Build Lightweight Executable
+```text
+build_setup.bat
+```
 
-`build_exe.bat` only creates the small launcher executable. PyInstaller also creates `build/` and `dist/` folders while doing this, and the script copies `dist/ChineseScreenOCR.exe` to the project root. This is not the setup installer.
+or:
 
-### Troubleshooting
+```text
+build_installer.bat
+```
 
-- **PyQt5 Issues**: If the UI doesn't launch, run `fix_pyqt.bat` to reinstall PyQt5.
-- **Environment Diagnostics**: If you encounter OCR issues, run `diagnose.bat` to check if PaddlePaddle and PaddleOCR are installed correctly.
+The installer is written to:
 
-## Acknowledgments
+```text
+installer_output\ChineseScreenOCR-Setup.exe
+```
 
-- [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) for the powerful OCR engine.
-- CC-CEDICT for the comprehensive Chinese-English dictionary.
+This build uses `.build-venv`, PyInstaller, and Inno Setup. Build output folders are ignored by git.
+
+### Lightweight Launcher EXE
+
+`build_exe.bat` creates only a small launcher executable. It is not the setup installer.
+
+PyInstaller will create `build/`, `dist/`, and a root `ChineseScreenOCR.exe` while doing this. Those files are build outputs.
+
+## Troubleshooting
+
+- If the UI does not launch, run `fix_pyqt.bat`.
+- If OCR fails, run `diagnose.bat`.
+- If PaddleOCR behaves strangely after dependency changes, run `repair_paddleocr.bat`.
+- If setup building fails with an Inno Setup error, install Inno Setup 6 and run `build_setup.bat` again.
+
+## Data Files
+
+Runtime settings and saved words are stored under the user's AppData folder. Old root-level `config.json` and `saved_words.json` files are still supported for migration.
+
+## Credits
+
+- PaddleOCR for Chinese OCR.
+- CC-CEDICT for Chinese-English dictionary data.
+- Jieba and pypinyin for segmentation and pinyin support.
