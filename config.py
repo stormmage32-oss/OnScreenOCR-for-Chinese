@@ -13,6 +13,7 @@ def load_config():
     defaults = {
         "hotkey": "alt+s",
         "pinyin_hotkey": "alt+p",
+        "seamless_hotkey": "alt+shift+s",
         "manga_mode": False,
         "deepl_enabled": False,
         "deepl_api_key": ""

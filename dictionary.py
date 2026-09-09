@@ -195,6 +195,9 @@ def get_char_weight(ch: str) -> float:
         return 0.4
     return 0.5
 
+def _has_chinese(text: str) -> bool:
+    return any('\u3400' <= ch <= '\u4dbf' or '\u4e00' <= ch <= '\u9fff' for ch in text)
+
 def segment_ocr_results(results):
     word_results = []
     for res in results:
@@ -215,6 +218,12 @@ def segment_ocr_results(results):
         for w in words:
             w_weight = sum(get_char_weight(c) for c in w)
             w_size = box_size * (w_weight / total_weight)
+
+            # Paddle can return mixed lines. Do not draw clickable boxes for
+            # their Latin-only fragments in a Chinese reader.
+            if not _has_chinese(w):
+                cursor += w_size
+                continue
             
             if w.strip():
                 hsk_info = lookup_hsk(w)

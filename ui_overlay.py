@@ -1,7 +1,7 @@
 import numpy as np
 from PyQt5.QtWidgets import (QWidget, QMainWindow, QVBoxLayout, QHBoxLayout, QLabel, 
                              QPushButton, QFrame, QScrollArea, QApplication, QRubberBand)
-from PyQt5.QtCore import Qt, QPoint, QRect, QSize, pyqtSignal, QTimer
+from PyQt5.QtCore import Qt, QPoint, QRect, QSize, pyqtSignal, QTimer, QEvent
 from PyQt5.QtGui import QFont, QFontMetrics, QColor, QBrush, QPen, QImage, QPixmap, QPainter
 
 from dictionary import lookup_hsk, HSK_COLORS, get_pinyin, get_char_weight
@@ -75,6 +75,8 @@ class OCRCanvas(QLabel):
         self.drag_start = None
         self.drag_rect = QRect()
         self.is_dragging = False
+        self._click_token = 0
+        self._detail_popup = None
         h, w = image.shape[:2]
         self._img_bytes = image.tobytes()
         qimg = QImage(self._img_bytes, w, h, 3*w, QImage.Format_RGB888)
@@ -158,6 +160,7 @@ class OCRCanvas(QLabel):
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
+            self._click_token += 1
             self._hover_timer.stop()
             self._hover_tooltip.dismiss()
             self.drag_start = e.pos()
@@ -185,38 +188,64 @@ class OCRCanvas(QLabel):
             self._repaint()
             
             if selected:
-                combined_text = "".join(r['text'] for r in selected)
-                combined_orig = "".join(r.get('original_sentence', r['text']) for r in selected)
-                combined_hsk = lookup_hsk(combined_text)
-                avg_conf = sum(r.get('confidence', 0) for r in selected) / len(selected)
-                
-                min_x = min(r['bbox']['x'] for r in selected)
-                min_y = min(r['bbox']['y'] for r in selected)
-                max_r = max(r['bbox']['x'] + r['bbox']['w'] for r in selected)
-                max_b = max(r['bbox']['y'] + r['bbox']['h'] for r in selected)
-                c_bbox = {'x': min_x, 'y': min_y, 'w': max_r - min_x, 'h': max_b - min_y}
-                
-                combo_res = {
-                    'text': combined_text,
-                    'confidence': avg_conf,
-                    'bbox': c_bbox,
-                    'hsk': combined_hsk,
-                    'original_sentence': combined_orig,
-                    'words': [r['text'] for r in selected]
-                }
-                
-                popup = DetailPopup(combo_res, self)
-                popup.adjustSize()
-                anchor = self.mapToGlobal(QPoint(c_bbox['x'] + c_bbox['w'] // 2, c_bbox['y']))
-                px = anchor.x() - popup.width() // 2
-                py = anchor.y() - popup.height() - 8
-                screen = QApplication.screenAt(anchor) or QApplication.primaryScreen()
-                screen_rect = screen.geometry()
-                if py < screen_rect.top() + 8:
-                    py = self.mapToGlobal(QPoint(c_bbox['x'], c_bbox['y'] + c_bbox['h'])).y() + 8
-                popup.move(px, py)
-                _clamp_popup(popup, self)
-                popup.show()
+                combo_res = self._combined_result(selected, translate_requested=not is_click)
+                if is_click:
+                    # Wait briefly so a double-click can replace this ordinary
+                    # dictionary lookup with a DeepL translation request.
+                    token = self._click_token
+                    QTimer.singleShot(180, lambda: self._show_if_single_click(token, combo_res))
+                else:
+                    self._show_detail_popup(combo_res)
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() != Qt.LeftButton:
+            return
+        self._click_token += 1  # cancels the first click's delayed popup
+        self.is_dragging = False
+        self.drag_rect = QRect()
+        self._repaint()
+        for res in self.results:
+            b = res['bbox']
+            if QRect(b['x'], b['y'], b['w'], b['h']).contains(e.pos()):
+                self._show_detail_popup(self._combined_result([res], translate_requested=True))
+                return
+
+    def _combined_result(self, selected, translate_requested=False):
+        combined_text = "".join(result['text'] for result in selected)
+        min_x = min(result['bbox']['x'] for result in selected)
+        min_y = min(result['bbox']['y'] for result in selected)
+        max_r = max(result['bbox']['x'] + result['bbox']['w'] for result in selected)
+        max_b = max(result['bbox']['y'] + result['bbox']['h'] for result in selected)
+        return {
+            'text': combined_text,
+            'confidence': sum(result.get('confidence', 0) for result in selected) / len(selected),
+            'bbox': {'x': min_x, 'y': min_y, 'w': max_r - min_x, 'h': max_b - min_y},
+            'hsk': lookup_hsk(combined_text),
+            'original_sentence': selected[0].get('original_sentence', combined_text) if len(selected) == 1 else combined_text,
+            'words': [result['text'] for result in selected],
+            'translate_requested': translate_requested,
+        }
+
+    def _show_if_single_click(self, token, result):
+        if token == self._click_token:
+            self._show_detail_popup(result)
+
+    def _show_detail_popup(self, result):
+        if self._detail_popup is not None and self._detail_popup.isVisible():
+            self._detail_popup.close()
+        popup = DetailPopup(result, self)
+        self._detail_popup = popup
+        popup.adjustSize()
+        bbox = result['bbox']
+        anchor = self.mapToGlobal(QPoint(bbox['x'] + bbox['w'] // 2, bbox['y']))
+        px = anchor.x() - popup.width() // 2
+        py = anchor.y() - popup.height() - 8
+        screen = QApplication.screenAt(anchor) or QApplication.primaryScreen()
+        if py < screen.geometry().top() + 8:
+            py = self.mapToGlobal(QPoint(bbox['x'], bbox['y'] + bbox['h'])).y() + 8
+        popup.move(px, py)
+        _clamp_popup(popup, self)
+        popup.show()
 
     def leaveEvent(self, _):
         self._hover_timer.stop()
@@ -224,12 +253,21 @@ class OCRCanvas(QLabel):
         if self.hovered_idx != -1: self.hovered_idx = -1; self._repaint()
 
 class OverlayWindow(QMainWindow):
-    def __init__(self, image: np.ndarray, results: list, main_win=None, screen_rect=None):
+    """OCR result window; seamless mode keeps controls hidden until the top edge is reached."""
+    seamless_closed = pyqtSignal()
+
+    def __init__(self, image: np.ndarray, results: list, main_win=None, screen_rect=None, seamless=False):
         super().__init__()
         self.main_win = main_win
         self.screen_rect = screen_rect
+        self.seamless = seamless
         self.setWindowTitle(f"OCR Results  {len(results)} texts")
-        self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
+        flags = Qt.WindowStaysOnTopHint
+        if seamless:
+            flags |= Qt.FramelessWindowHint | Qt.Tool | Qt.CustomizeWindowHint
+        else:
+            flags |= Qt.Window
+        self.setWindowFlags(flags)
         self.setStyleSheet("QMainWindow{background:#FAF4EB;}")
         h, w = image.shape[:2]
         if screen_rect:
@@ -237,11 +275,16 @@ class OverlayWindow(QMainWindow):
         else:
             self.resize(min(w+40,1440), min(h+80,960))
         self._build(image, results)
+        if self.seamless:
+            self.setMouseTracking(True)
+            self._set_controls_visible(False)
+            self.setAttribute(Qt.WA_DeleteOnClose, True)
 
     def _build(self, image, results):
         cw = QWidget(); self.setCentralWidget(cw)
         vb = QVBoxLayout(cw); vb.setContentsMargins(0,0,0,0); vb.setSpacing(0)
         bar = QFrame(); bar.setFixedHeight(46)
+        self.control_bar = bar
         bar.setStyleSheet("background:#F4EFE6;border-bottom:1px solid #D4C5B0;")
         bl = QHBoxLayout(bar); bl.setContentsMargins(14,0,14,0)
         info = QLabel(f"  {len(results)} texts found (PaddleOCR)   Click on boxes")
@@ -266,10 +309,48 @@ class OverlayWindow(QMainWindow):
         
         vb.addWidget(bar)
         sc = QScrollArea(); sc.setStyleSheet("background:#FAF4EB;border:none;"); sc.setWidgetResizable(True)
+        if self.seamless:
+            sc.setFrameShape(QFrame.NoFrame)
+            sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            sc.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         inner = QWidget(); inner.setStyleSheet("background:#FAF4EB;")
-        il = QVBoxLayout(inner); il.setAlignment(Qt.AlignCenter); il.setContentsMargins(20,20,20,20)
+        il = QVBoxLayout(inner); il.setAlignment(Qt.AlignCenter)
+        if self.seamless:
+            il.setContentsMargins(0, 0, 0, 0)
+        else:
+            il.setContentsMargins(20, 20, 20, 20)
         self.canvas = OCRCanvas(image, results); il.addWidget(self.canvas)
         sc.setWidget(inner); vb.addWidget(sc)
+        if self.seamless:
+            # The canvas consumes mouse moves, so observe it as well as the window.
+            self.canvas.installEventFilter(self)
+            sc.viewport().installEventFilter(self)
+
+    def _set_controls_visible(self, visible):
+        self.control_bar.setVisible(visible)
+        self.control_bar.setFixedHeight(46 if visible else 0)
+
+    def eventFilter(self, watched, event):
+        if self.seamless and event.type() == QEvent.MouseMove:
+            global_pos = watched.mapToGlobal(event.pos())
+            self._set_controls_visible(global_pos.y() <= self.frameGeometry().top() + 58)
+        return super().eventFilter(watched, event)
+
+    def mouseMoveEvent(self, event):
+        if self.seamless:
+            self._set_controls_visible(event.globalPos().y() <= self.frameGeometry().top() + 58)
+        super().mouseMoveEvent(event)
+
+    def keyPressEvent(self, event):
+        if self.seamless and event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        if self.seamless:
+            self.seamless_closed.emit()
+        super().closeEvent(event)
 
     def _yeni_tarama(self):
         self.close()

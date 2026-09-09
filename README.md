@@ -23,19 +23,21 @@ Manga mode helps with vertical Chinese text. You can scan a panel, inspect recog
 - Region scan: drag over any part of the screen and run OCR on that area.
 - Full screen scan: scan the active screen with a hotkey.
 - Pinyin overlay: show pinyin directly above Chinese characters, then toggle it off with the same hotkey.
+- SEAMLESS mode: scan the active screen into a borderless, full-screen OCR view. The controls stay hidden for immersion and appear only when the mouse reaches the top edge; press its hotkey or `Esc` to return straight to the game/app.
 - Adaptive pinyin color: overlay text changes color based on the screen area behind it for better contrast.
 - Dictionary popups: click recognized text to see pinyin, meanings, and HSK information.
 - Hover hints: hover over recognized boxes for quick word feedback.
 - Manga mode: rotate OCR handling for vertical Chinese text.
-- DeepL translation: optional sentence translation with your own DeepL API key.
+- DeepL translation: optional translation of a double-clicked word or a dragged text selection with your own DeepL API key.
 - Vocabulary notebook: save words and export them for Anki.
 - System tray support: keep the app running in the background.
-- Offline dictionary: CC-CEDICT and HSK data are bundled locally.
+- Offline dictionary: CC-CEDICT (current bundled release: 2026-09-07) and HSK data are bundled locally.
 
 ## Hotkeys
 
 - Full screen scan: `Alt+S` by default.
 - Pinyin overlay: `Alt+P` by default.
+- SEAMLESS mode: `Alt+Shift+S` by default.
 
 Both hotkeys can be changed from the main window.
 
@@ -107,5 +109,5 @@ Runtime settings and saved words are stored under the user's AppData folder. Old
 ## Credits
 
 - PaddleOCR for Chinese OCR.
-- CC-CEDICT for Chinese-English dictionary data.
+- CC-CEDICT for Chinese-English dictionary data, attributed to MDBG / CC-CEDICT contributors under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 - Jieba and pypinyin for segmentation and pinyin support.

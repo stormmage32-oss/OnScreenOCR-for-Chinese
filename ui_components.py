@@ -241,15 +241,16 @@ class DetailPopup(QDialog):
 
         config = load_config()
 
-        if config.get('deepl_enabled') and config.get('deepl_api_key'):
+        if (result.get('translate_requested')
+                and config.get('deepl_enabled')
+                and config.get('deepl_api_key')):
             self.tl_lbl = QLabel("DeepL: Translating...")
             self.tl_lbl.setFont(QFont("Arial", 10))
             self.tl_lbl.setWordWrap(True)
             self.tl_lbl.setStyleSheet("color:#6B8E4E;background:transparent;font-style:italic;")
             cl.addWidget(self.tl_lbl)
 
-            target_text = orig if (orig and orig != text) else text
-            self.worker = TranslationWorker(target_text, config.get('deepl_api_key'))
+            self.worker = TranslationWorker(text, config.get('deepl_api_key'))
             self.worker.finished.connect(self._on_translation_done)
             self.worker.start()
 

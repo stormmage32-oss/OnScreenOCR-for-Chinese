@@ -45,10 +45,10 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Chinese Screen OCR")
-        self.setFixedSize(520, 500)
+        self.setFixedSize(520, 540)
         self.setStyleSheet("QMainWindow,QWidget{background:#FAF4EB;color:#4A3F35;}")
         self.ocr_ready = False; self.overlay = None; self.pinyin_overlay = None; self._worker = None
-        self._active_screen_rect = None; self._ocr_mode = "normal"
+        self._active_screen_rect = None; self._ocr_mode = "normal"; self.seamless_overlay = None
         self.config = load_config()
         self._build(); self._start_init()
         self._setup_hotkey()
@@ -90,17 +90,19 @@ class MainWindow(QMainWindow):
         self.cb_manga.stateChanged.connect(self._save_manga_mode)
         vb.addWidget(self.cb_manga, alignment=Qt.AlignCenter)
         
-        self.cb_deepl = QCheckBox("Enable DeepL Translation (EN)")
+        self.cb_deepl = QCheckBox("Enable DeepL Translation (double-click / selection)")
         self.cb_deepl.setStyleSheet("color:#4A3F35; font-size:13px;")
         self.cb_deepl.setChecked(self.config.get('deepl_enabled', False))
         self.cb_deepl.stateChanged.connect(self._save_deepl_enabled)
         vb.addWidget(self.cb_deepl, alignment=Qt.AlignCenter)
         
         dl_layout = QHBoxLayout()
-        dl_lbl = QLabel("DeepL API Key:")
+        dl_lbl = QLabel("DeepL API Key (Free):")
         dl_lbl.setStyleSheet("color:#8B7D6B;font-size:12px;")
         self.le_deepl_key = QLineEdit(self.config.get('deepl_api_key', ''))
         self.le_deepl_key.setEchoMode(QLineEdit.PasswordEchoOnEdit)
+        self.le_deepl_key.setPlaceholderText("Paste your DeepL API key here")
+        self.le_deepl_key.setToolTip("Your key is saved only in this computer's app settings.")
         self.le_deepl_key.setStyleSheet("background:#FFF8F0;border:1px solid #D4C5B0;border-radius:4px;padding:2px;")
         self.le_deepl_key.textChanged.connect(self._save_deepl_key)
         dl_layout.addWidget(dl_lbl)
@@ -133,7 +135,20 @@ class MainWindow(QMainWindow):
         phl.addWidget(btn_phk)
         phl.addStretch()
         vb.addLayout(phl)
-        
+
+        shl = QHBoxLayout()
+        shl.addStretch()
+        self.lbl_shk = QLabel(f"SEAMLESS Mode Hotkey: [ {self.config.get('seamless_hotkey', 'alt+shift+s')} ]")
+        self.lbl_shk.setStyleSheet("color:#8B7D6B;font-size:12px;")
+        shl.addWidget(self.lbl_shk)
+        btn_shk = QPushButton("Change")
+        btn_shk.setStyleSheet(BTN_S)
+        btn_shk.setFixedSize(70, 24)
+        btn_shk.clicked.connect(self._change_seamless_hotkey)
+        shl.addWidget(btn_shk)
+        shl.addStretch()
+        vb.addLayout(shl)
+
         vb.addStretch()
         hint = QLabel("Hint: double click in selection screen = full screen  |  ESC = cancel")
         hint.setStyleSheet("color:#9B8B7A;font-size:11px;"); hint.setAlignment(Qt.AlignCenter)
@@ -246,6 +261,9 @@ class MainWindow(QMainWindow):
             if self._ocr_mode == "pinyin":
                 self._show_pinyin_overlay(r)
                 return
+            if self._ocr_mode == "seamless":
+                self._show_seamless_overlay(img, r)
+                return
             self.show(); self._set_buttons(True)
             if not r: QMessageBox.information(self,"Result","No text found."); return
             word_results = segment_ocr_results(r)
@@ -256,19 +274,52 @@ class MainWindow(QMainWindow):
                 self.overlay.showMaximized()
 
         def err(m):
-            prog.close(); self.show(); self._set_buttons(True)
+            prog.close()
+            seamless = self._ocr_mode == "seamless"
+            if not seamless: self.show()
+            self._set_buttons(True)
             self._ocr_mode = "normal"
-            QMessageBox.critical(self,"OCR Error", m)
+            if seamless:
+                self.tray_icon.showMessage("Chinese Screen OCR", f"SEAMLESS OCR failed: {m}", QSystemTrayIcon.Warning, 5000)
+            else:
+                QMessageBox.critical(self,"OCR Error", m)
 
         w.finished.connect(done); w.error.connect(err); w.start()
 
     def _setup_hotkey(self):
+        self._remove_startup_hotkey_conflicts()
         self.hk_listener = HotkeyListener()
         self.hk_listener.triggered.connect(self._start_full_from_hotkey)
         self.hk_listener.set_hotkey(self.config.get('hotkey', 'alt+s'))
         self.pinyin_hk_listener = HotkeyListener()
         self.pinyin_hk_listener.triggered.connect(self._toggle_pinyin_overlay_from_hotkey)
         self.pinyin_hk_listener.set_hotkey(self.config.get('pinyin_hotkey', 'alt+p'))
+        self.seamless_hk_listener = HotkeyListener()
+        self.seamless_hk_listener.triggered.connect(self._toggle_seamless_from_hotkey)
+        self.seamless_hk_listener.set_hotkey(self.config.get('seamless_hotkey', 'alt+shift+s'))
+        self.seamless_esc_listener = HotkeyListener()
+        self.seamless_esc_listener.triggered.connect(self._close_seamless)
+        self.seamless_esc_listener.set_hotkey('esc')
+
+    def _remove_startup_hotkey_conflicts(self):
+        """Migrate an existing config where two modes were assigned one key."""
+        bindings = (
+            ("seamless_hotkey", self.lbl_shk, "SEAMLESS Mode Hotkey"),
+            ("pinyin_hotkey", self.lbl_phk, "Pinyin Overlay Hotkey"),
+            ("hotkey", self.lbl_hk, "Full Screen Hotkey"),
+        )
+        used = set()
+        changed = False
+        for key, label, prefix in bindings:
+            hotkey = self.config.get(key, "").strip()
+            if hotkey and hotkey.lower() in used:
+                self.config[key] = ""
+                label.setText(f"{prefix}: [ disabled ]")
+                changed = True
+            elif hotkey:
+                used.add(hotkey.lower())
+        if changed:
+            save_config(self.config)
         
     def _start_full_from_hotkey(self):
         if self.ocr_ready and self.btn_f.isEnabled():
@@ -282,6 +333,56 @@ class MainWindow(QMainWindow):
             return
         if self.ocr_ready and self.btn_f.isEnabled():
             self._start_pinyin_overlay()
+
+    def _toggle_seamless_from_hotkey(self):
+        if self.seamless_overlay is not None:
+            self._close_seamless()
+        elif self.ocr_ready and self.btn_f.isEnabled():
+            self._start_seamless()
+
+    def _close_seamless(self):
+        if self.seamless_overlay is not None:
+            if self.seamless_overlay.isVisible():
+                self.seamless_overlay.close()
+            else:
+                self.seamless_overlay = None
+                self._set_buttons(True)
+
+    def _start_seamless(self):
+        self._set_buttons(False)
+        self.hide()
+        self._ocr_mode = "seamless"
+        s = self._screen_rect_for_action()
+        self._active_screen_rect = s
+        QTimer.singleShot(150, lambda: self._do_cap(s.x(), s.y(), s.width(), s.height()))
+
+    def _show_seamless_overlay(self, image, results):
+        self._ocr_mode = "normal"
+        if not results:
+            self._set_buttons(True)
+            self.tray_icon.showMessage("Chinese Screen OCR", "SEAMLESS scan found no text.", QSystemTrayIcon.Information, 3000)
+            return
+        if self.seamless_overlay is not None:
+            self.seamless_overlay.close()
+        word_results = segment_ocr_results(results)
+        overlay = OverlayWindow(image, word_results, main_win=None,
+                                screen_rect=self._active_screen_rect, seamless=True)
+        self.seamless_overlay = overlay
+
+        def closed(*_):
+            if self.seamless_overlay is overlay:
+                self.seamless_overlay = None
+                self._set_buttons(True)
+                # Deliberately keep the main window hidden so focus returns to the game/app.
+                self.hide()
+
+        overlay.seamless_closed.connect(closed)
+        # showFullScreen is intentional: merely using a frameless flag still
+        # leaves a Windows title bar in some Qt/Windows combinations.
+        overlay.showFullScreen()
+        overlay.raise_()
+        overlay.activateWindow()
+        overlay.setFocus()
 
     def _start_pinyin_overlay(self):
         self._set_buttons(False)
@@ -322,6 +423,15 @@ class MainWindow(QMainWindow):
             listener=self.pinyin_hk_listener,
         )
 
+    def _change_seamless_hotkey(self):
+        self._read_hotkey(
+            title="Press new SEAMLESS mode hotkey...\n(e.g., Ctrl+Shift+S)",
+            config_key="seamless_hotkey",
+            label=self.lbl_shk,
+            label_prefix="SEAMLESS Mode Hotkey",
+            listener=self.seamless_hk_listener,
+        )
+
     def _read_hotkey(self, title, config_key, label, label_prefix, listener):
         self.btn_r.setEnabled(False); self.btn_f.setEnabled(False)
         msg = QDialog(self, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
@@ -346,12 +456,26 @@ class MainWindow(QMainWindow):
             msg.close()
             self._set_buttons(True)
             if hk:
+                self._clear_hotkey_conflicts(config_key, hk)
                 self.config[config_key] = hk
                 save_config(self.config)
                 label.setText(f"{label_prefix}: [ {hk} ]")
                 listener.set_hotkey(hk)
         self.hk_reader.done.connect(on_done)
         self.hk_reader.start()
+
+    def _clear_hotkey_conflicts(self, config_key, hotkey):
+        """One physical shortcut must control exactly one OCR mode."""
+        bindings = {
+            "hotkey": (self.hk_listener, self.lbl_hk, "Full Screen Hotkey"),
+            "pinyin_hotkey": (self.pinyin_hk_listener, self.lbl_phk, "Pinyin Overlay Hotkey"),
+            "seamless_hotkey": (self.seamless_hk_listener, self.lbl_shk, "SEAMLESS Mode Hotkey"),
+        }
+        for key, (listener, label, prefix) in bindings.items():
+            if key != config_key and self.config.get(key, "").lower() == hotkey.lower():
+                listener.set_hotkey("")
+                self.config[key] = ""
+                label.setText(f"{prefix}: [ disabled ]")
 
     def _setup_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
@@ -431,5 +555,7 @@ class MainWindow(QMainWindow):
     def _exit_app(self):
         if self.pinyin_overlay is not None:
             self.pinyin_overlay.close()
+        if self.seamless_overlay is not None:
+            self.seamless_overlay.close()
         self.tray_icon.hide()
         QApplication.quit()

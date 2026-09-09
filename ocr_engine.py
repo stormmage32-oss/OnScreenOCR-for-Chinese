@@ -11,6 +11,12 @@ logger = logging.getLogger("OCRApp")
 OCR_ENGINE = None
 OCR_TYPE = None  # 'paddle' | 'easyocr' | 'rapid' | None
 
+
+def _contains_chinese(text: str) -> bool:
+    """Keep this app focused on Chinese rather than browser/UI Latin text."""
+    return any('\u3400' <= char <= '\u4dbf' or '\u4e00' <= char <= '\u9fff'
+               for char in text)
+
 def init_ocr() -> bool:
     global OCR_ENGINE, OCR_TYPE
     try:
@@ -67,9 +73,10 @@ def _parse_paddle(image):
             if line is None: continue
             pts, (text, conf) = line
             xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
-            items.append({'text': text, 'confidence': float(conf),
-                          'bbox': {'x': int(min(xs)), 'y': int(min(ys)),
-                                   'w': int(max(xs)-min(xs)), 'h': int(max(ys)-min(ys))}})
+            if _contains_chinese(text):
+                items.append({'text': text, 'confidence': float(conf),
+                              'bbox': {'x': int(min(xs)), 'y': int(min(ys)),
+                                       'w': int(max(xs)-min(xs)), 'h': int(max(ys)-min(ys))}})
         except Exception: pass
     return items
 
