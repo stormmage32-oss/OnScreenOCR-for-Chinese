@@ -1,3 +1,5 @@
+import sys
+import logging
 import numpy as np
 from PyQt5.QtWidgets import (QWidget, QMainWindow, QVBoxLayout, QHBoxLayout, QLabel, 
                              QPushButton, QFrame, QScrollArea, QApplication, QRubberBand)
@@ -7,6 +9,8 @@ from PyQt5.QtGui import QFont, QFontMetrics, QColor, QBrush, QPen, QImage, QPixm
 from dictionary import lookup_hsk, HSK_COLORS, get_pinyin, get_char_weight
 from word_notebook import save_word
 from ui_components import HoverTooltip, DetailPopup, _clamp_popup
+
+logger = logging.getLogger("OCRApp")
 
 class RegionSelector(QWidget):
     region_selected = pyqtSignal(int, int, int, int)
@@ -500,3 +504,67 @@ class PinyinOverlayWindow(QWidget):
                 p.restore()
 
         p.end()
+
+
+class LivePinyinOverlayWindow(PinyinOverlayWindow):
+    """Click-through pinyin layer refreshed continuously by LiveScanWorker.
+
+    It never takes focus or input, so the game underneath keeps working, and it
+    is excluded from screen capture so the scanner never reads its own labels.
+    """
+    WDA_EXCLUDEFROMCAPTURE = 0x11
+
+    def __init__(self, screen_rect: QRect):
+        super().__init__([], screen_rect)
+        self.setWindowFlag(Qt.WindowDoesNotAcceptFocus, True)
+        self._topmost_timer = QTimer(self)
+        self._topmost_timer.setInterval(2000)
+        self._topmost_timer.timeout.connect(self._keep_on_top)
+        self._exclude_from_capture()
+
+    def set_results(self, results, image):
+        self.results = results
+        self.image = image
+        self.update()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._topmost_timer.start()
+
+    def hideEvent(self, event):
+        self._topmost_timer.stop()
+        super().hideEvent(event)
+
+    def _exclude_from_capture(self):
+        if sys.platform != 'win32':
+            return
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.WinDLL('user32')
+        user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+        user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
+        GWL_EXSTYLE, WS_EX_LAYERED = -20, 0x80000
+        hwnd = int(self.winId())  # creates the native window while it is still hidden
+        # Windows refuses display affinity on layered (translucent) windows, so drop
+        # the layered style for the call and restore it; the setting sticks.
+        ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style & ~WS_EX_LAYERED)
+        ok = user32.SetWindowDisplayAffinity(hwnd, self.WDA_EXCLUDEFROMCAPTURE)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style)
+        if not ok:
+            logger.warning("[LIVE] Could not exclude overlay from capture (needs Windows 10 2004+).")
+
+    def _keep_on_top(self):
+        # Borderless games often push themselves to the top; re-assert without stealing focus.
+        if sys.platform != 'win32':
+            return
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.WinDLL('user32')
+        user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                        ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+        HWND_TOPMOST = -1
+        SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_NOOWNERZORDER = 0x1, 0x2, 0x10, 0x200
+        user32.SetWindowPos(int(self.winId()), HWND_TOPMOST, 0, 0, 0, 0,
+                            SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOOWNERZORDER)

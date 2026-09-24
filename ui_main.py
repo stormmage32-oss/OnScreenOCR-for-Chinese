@@ -8,9 +8,9 @@ from PyQt5.QtCore import Qt, QObject, pyqtSignal, QThread, QTimer, QRect
 from PyQt5.QtGui import QFont, QIcon, QPixmap, QPainter, QBrush, QColor, QCursor
 
 from config import load_config, save_config
-from ocr_engine import init_ocr, take_screenshot, OCRWorker
+from ocr_engine import init_ocr, take_screenshot, OCRWorker, LiveScanWorker
 from dictionary import segment_ocr_results
-from ui_overlay import RegionSelector, OverlayWindow, PinyinOverlayWindow
+from ui_overlay import RegionSelector, OverlayWindow, PinyinOverlayWindow, LivePinyinOverlayWindow
 from word_notebook import WordNotebookWindow
 
 logger = logging.getLogger("OCRApp")
@@ -45,10 +45,11 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Chinese Screen OCR")
-        self.setFixedSize(520, 540)
+        self.setFixedSize(520, 620)
         self.setStyleSheet("QMainWindow,QWidget{background:#FAF4EB;color:#4A3F35;}")
         self.ocr_ready = False; self.overlay = None; self.pinyin_overlay = None; self._worker = None
         self._active_screen_rect = None; self._ocr_mode = "normal"; self.seamless_overlay = None
+        self.live_overlay = None; self._live_worker = None
         self.config = load_config()
         self._build(); self._start_init()
         self._setup_hotkey()
@@ -77,6 +78,11 @@ class MainWindow(QMainWindow):
         self.btn_f = QPushButton("Scan Full Screen"); self.btn_f.setFixedHeight(44)
         self.btn_f.setEnabled(False); self.btn_f.setStyleSheet(BTN_S)
         self.btn_f.clicked.connect(self._start_full); vb.addWidget(self.btn_f)
+        vb.addSpacing(10)
+
+        self.btn_live = QPushButton("Start Live Pinyin (Game Mode)"); self.btn_live.setFixedHeight(44)
+        self.btn_live.setEnabled(False); self.btn_live.setStyleSheet(BTN_S)
+        self.btn_live.clicked.connect(self._toggle_live); vb.addWidget(self.btn_live)
         vb.addSpacing(10)
 
         self.btn_n = QPushButton("Vocabulary Notebook"); self.btn_n.setFixedHeight(44)
@@ -149,6 +155,19 @@ class MainWindow(QMainWindow):
         shl.addStretch()
         vb.addLayout(shl)
 
+        lhl = QHBoxLayout()
+        lhl.addStretch()
+        self.lbl_lhk = QLabel(f"Live Pinyin Hotkey: [ {self.config.get('live_hotkey', 'alt+l')} ]")
+        self.lbl_lhk.setStyleSheet("color:#8B7D6B;font-size:12px;")
+        lhl.addWidget(self.lbl_lhk)
+        btn_lhk = QPushButton("Change")
+        btn_lhk.setStyleSheet(BTN_S)
+        btn_lhk.setFixedSize(70, 24)
+        btn_lhk.clicked.connect(self._change_live_hotkey)
+        lhl.addWidget(btn_lhk)
+        lhl.addStretch()
+        vb.addLayout(lhl)
+
         vb.addStretch()
         hint = QLabel("Hint: double click in selection screen = full screen  |  ESC = cancel")
         hint.setStyleSheet("color:#9B8B7A;font-size:11px;"); hint.setAlignment(Qt.AlignCenter)
@@ -179,7 +198,7 @@ class MainWindow(QMainWindow):
             self.status.setText(f"  {name} ready - Ready to read Chinese!")
             self.status.setStyleSheet("color:#375623;background:#E2EFDA;border:1px solid #A9D18E;"
                                       "border-radius:8px;padding:10px 16px;font-size:13px;")
-            self.btn_r.setEnabled(True); self.btn_f.setEnabled(True)
+            self.btn_r.setEnabled(True); self.btn_f.setEnabled(True); self.btn_live.setEnabled(True)
         else:
             self.status.setText("Failed to load OCR. Check the log file in AppData.")
             self.status.setStyleSheet("color:#C65911;background:#FCE4D6;border:1px solid #F4B084;"
@@ -300,10 +319,14 @@ class MainWindow(QMainWindow):
         self.seamless_esc_listener = HotkeyListener()
         self.seamless_esc_listener.triggered.connect(self._close_seamless)
         self.seamless_esc_listener.set_hotkey('esc')
+        self.live_hk_listener = HotkeyListener()
+        self.live_hk_listener.triggered.connect(self._toggle_live)
+        self.live_hk_listener.set_hotkey(self.config.get('live_hotkey', 'alt+l'))
 
     def _remove_startup_hotkey_conflicts(self):
         """Migrate an existing config where two modes were assigned one key."""
         bindings = (
+            ("live_hotkey", self.lbl_lhk, "Live Pinyin Hotkey"),
             ("seamless_hotkey", self.lbl_shk, "SEAMLESS Mode Hotkey"),
             ("pinyin_hotkey", self.lbl_phk, "Pinyin Overlay Hotkey"),
             ("hotkey", self.lbl_hk, "Full Screen Hotkey"),
@@ -405,6 +428,37 @@ class MainWindow(QMainWindow):
         self.pinyin_overlay.destroyed.connect(lambda *_: setattr(self, "pinyin_overlay", None))
         self.pinyin_overlay.show()
 
+    def _toggle_live(self):
+        if self._live_worker is not None:
+            self._stop_live()
+        elif self.ocr_ready:
+            self._start_live()
+
+    def _start_live(self):
+        s = self._screen_rect_for_action()
+        self.live_overlay = LivePinyinOverlayWindow(s)
+        self.live_overlay.show()
+        self._live_worker = LiveScanWorker((s.x(), s.y(), s.width(), s.height()),
+                                           manga_mode=self.config.get('manga_mode', False))
+        self._live_worker.results_changed.connect(self.live_overlay.set_results)
+        self._live_worker.start()
+        self.btn_live.setText("Stop Live Pinyin")
+        self.act_live.setText("Stop Live Pinyin")
+        # Hide the main window so the game is what's underneath the labels.
+        self.hide()
+
+    def _stop_live(self):
+        worker, self._live_worker = self._live_worker, None
+        if worker is not None:
+            worker.results_changed.disconnect()
+            worker.stop()
+            worker.wait(5000)
+        if self.live_overlay is not None:
+            self.live_overlay.close()
+            self.live_overlay = None
+        self.btn_live.setText("Start Live Pinyin (Game Mode)")
+        self.act_live.setText("Start Live Pinyin")
+
     def _change_hotkey(self):
         self._read_hotkey(
             title="Press new full screen hotkey...\n(e.g., Ctrl+Shift+A)",
@@ -430,6 +484,15 @@ class MainWindow(QMainWindow):
             label=self.lbl_shk,
             label_prefix="SEAMLESS Mode Hotkey",
             listener=self.seamless_hk_listener,
+        )
+
+    def _change_live_hotkey(self):
+        self._read_hotkey(
+            title="Press new live pinyin hotkey...\n(e.g., Ctrl+Shift+L)",
+            config_key="live_hotkey",
+            label=self.lbl_lhk,
+            label_prefix="Live Pinyin Hotkey",
+            listener=self.live_hk_listener,
         )
 
     def _read_hotkey(self, title, config_key, label, label_prefix, listener):
@@ -470,6 +533,7 @@ class MainWindow(QMainWindow):
             "hotkey": (self.hk_listener, self.lbl_hk, "Full Screen Hotkey"),
             "pinyin_hotkey": (self.pinyin_hk_listener, self.lbl_phk, "Pinyin Overlay Hotkey"),
             "seamless_hotkey": (self.seamless_hk_listener, self.lbl_shk, "SEAMLESS Mode Hotkey"),
+            "live_hotkey": (self.live_hk_listener, self.lbl_lhk, "Live Pinyin Hotkey"),
         }
         for key, (listener, label, prefix) in bindings.items():
             if key != config_key and self.config.get(key, "").lower() == hotkey.lower():
@@ -507,6 +571,10 @@ class MainWindow(QMainWindow):
         act_scan = QAction("Quick Scan (Select Region)", self)
         act_scan.triggered.connect(self._start_region)
         menu.addAction(act_scan)
+
+        self.act_live = QAction("Start Live Pinyin", self)
+        self.act_live.triggered.connect(self._toggle_live)
+        menu.addAction(self.act_live)
 
         act_notebook = QAction("Vocabulary Notebook", self)
         act_notebook.triggered.connect(self._open_notebook)
@@ -553,6 +621,7 @@ class MainWindow(QMainWindow):
             event.accept()
 
     def _exit_app(self):
+        self._stop_live()
         if self.pinyin_overlay is not None:
             self.pinyin_overlay.close()
         if self.seamless_overlay is not None:

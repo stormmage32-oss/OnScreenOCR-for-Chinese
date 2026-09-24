@@ -23,6 +23,7 @@ Manga mode helps with vertical Chinese text. You can scan a panel, inspect recog
 - Region scan: drag over any part of the screen and run OCR on that area.
 - Full screen scan: scan the active screen with a hotkey.
 - Pinyin overlay: show pinyin directly above Chinese characters, then toggle it off with the same hotkey.
+- Live Pinyin (game mode): keeps scanning the screen and draws pinyin above every Chinese character in real time. The layer is click-through and never takes focus, so you keep playing normally; labels disappear as soon as their characters leave the screen. Works over windowed and borderless-windowed games (exclusive fullscreen games draw above every other window).
 - SEAMLESS mode: scan the active screen into a borderless, full-screen OCR view. The controls stay hidden for immersion and appear only when the mouse reaches the top edge; press its hotkey or `Esc` to return straight to the game/app.
 - Adaptive pinyin color: overlay text changes color based on the screen area behind it for better contrast.
 - Dictionary popups: click recognized text to see pinyin, meanings, and HSK information.
@@ -38,8 +39,9 @@ Manga mode helps with vertical Chinese text. You can scan a panel, inspect recog
 - Full screen scan: `Alt+S` by default.
 - Pinyin overlay: `Alt+P` by default.
 - SEAMLESS mode: `Alt+Shift+S` by default.
+- Live Pinyin (game mode) on/off: `Alt+L` by default.
 
-Both hotkeys can be changed from the main window.
+All hotkeys can be changed from the main window.
 
 ## Requirements
 

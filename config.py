@@ -14,6 +14,7 @@ def load_config():
         "hotkey": "alt+s",
         "pinyin_hotkey": "alt+p",
         "seamless_hotkey": "alt+shift+s",
+        "live_hotkey": "alt+l",
         "manga_mode": False,
         "deepl_enabled": False,
         "deepl_api_key": ""
