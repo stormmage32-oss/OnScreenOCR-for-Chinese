@@ -29,7 +29,11 @@ def init_ocr() -> bool:
             sys.path.insert(0, paddleocr_data_dir)
         from paddleocr import PaddleOCR
         logger.info("[OCR] Trying PaddleOCR...")
+        # return_word_box makes the recognizer report where each character sits in
+        # its line, which lets the pinyin overlay align labels with the real glyphs.
         init_attempts = [
+            {"use_angle_cls": True, "lang": "ch", "use_gpu": False, "show_log": False, "enable_mkldnn": False,
+             "return_word_box": True},
             {"use_angle_cls": True, "lang": "ch", "use_gpu": False, "show_log": False, "enable_mkldnn": False},
             {"use_angle_cls": True, "lang": "ch", "show_log": False, "enable_mkldnn": False},
             {"use_angle_cls": True, "lang": "ch"},
@@ -76,14 +80,77 @@ def _parse_paddle(image):
     for line in lines:
         try:
             if line is None: continue
-            pts, (text, conf) = line
+            pts, rec = line
+            text, conf = rec[0], rec[1]
             xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
             if _contains_chinese(text):
-                items.append({'text': text, 'confidence': float(conf),
-                              'bbox': {'x': int(min(xs)), 'y': int(min(ys)),
-                                       'w': int(max(xs)-min(xs)), 'h': int(max(ys)-min(ys))}})
+                item = {'text': text, 'confidence': float(conf),
+                        'bbox': {'x': int(min(xs)), 'y': int(min(ys)),
+                                 'w': int(max(xs)-min(xs)), 'h': int(max(ys)-min(ys))}}
+                if len(rec) > 2 and rec[2]:
+                    try: _add_glyph_geometry(item, image, pts, rec[2])
+                    except Exception as e: logger.debug(f"[OCR] glyph geometry skipped: {e}")
+                items.append(item)
         except Exception: pass
     return items
+
+
+def _is_cjk(ch: str) -> bool:
+    return '㐀' <= ch <= '䶿' or '一' <= ch <= '鿿'
+
+
+def _add_glyph_geometry(item, image, pts, word_info):
+    """Attach per-character positions and the real ink band of the line.
+
+    The detector box is padded (and stretched by superscripts such as "[2]"),
+    so labels placed from it float too high and drift sideways. The CTC
+    recognizer knows which column each character fired in, and the image tells
+    us where the Chinese glyphs' ink actually starts and ends vertically.
+    """
+    col_num, word_list, word_col_list, _ = word_info
+    if not col_num:
+        return
+    x0 = min(pts[0][0], pts[3][0]); x1 = max(pts[1][0], pts[2][0])
+    cell = (x1 - x0) / col_num
+    text = item['text']
+    pairs = [(c, col) for word, cols in zip(word_list, word_col_list) for c, col in zip(word, cols)]
+    centers = [None] * len(text)
+    k = 0
+    for i, ch in enumerate(text):
+        if k < len(pairs) and pairs[k][0] == ch:
+            centers[i] = x0 + (pairs[k][1] + 0.5) * cell
+            k += 1
+    cjk = [(i, centers[i]) for i, ch in enumerate(text) if _is_cjk(ch) and centers[i] is not None]
+    if not cjk:
+        return
+
+    # Character pitch from neighbouring Chinese characters.
+    steps = [b[1] - a[1] for a, b in zip(cjk, cjk[1:]) if b[0] == a[0] + 1 and b[1] > a[1]]
+    b = item['bbox']
+    pitch = float(np.median(steps)) if steps else b['h'] * 0.75
+
+    # Ink band measured only under the Chinese characters.
+    img_h, img_w = image.shape[:2]
+    y1 = max(0, b['y']); y2 = min(img_h, b['y'] + b['h'])
+    top, height = b['y'] + b['h'] * 0.15, b['h'] * 0.7
+    if y2 - y1 >= 6:
+        cols = np.zeros(img_w, dtype=bool)
+        for _, cx in cjk:
+            cols[max(0, int(cx - pitch / 2)):min(img_w, int(cx + pitch / 2))] = True
+        crop = image[y1:y2][:, cols].astype(np.int16)
+        if crop.size:
+            border = np.concatenate([crop[0], crop[-1]])
+            bg = np.median(border, axis=0)
+            profile = (np.abs(crop - bg).sum(axis=2) > 90).mean(axis=1)
+            rows = np.nonzero(profile >= profile.max() * 0.15)[0] if profile.max() > 0.02 else []
+            if len(rows) and rows[-1] - rows[0] + 1 >= b['h'] * 0.3:
+                top, height = y1 + rows[0], rows[-1] - rows[0] + 1
+                if not steps:
+                    pitch = height * 1.05
+    item['text_top'] = int(top)
+    item['text_h'] = int(height)
+    item['chars'] = [{'ch': text[i], 'x': int(round(cx - pitch / 2)), 'w': max(1, int(round(pitch)))}
+                     for i, cx in cjk]
 
 def take_screenshot(region=None) -> np.ndarray:
     with mss.mss() as sct:
@@ -103,6 +170,9 @@ def run_ocr_oriented(image: np.ndarray, manga_mode=False) -> list:
     res = run_ocr(np.ascontiguousarray(np.rot90(image, k=-1)))
     h = image.shape[0]
     for r in res:
+        # Glyph geometry is measured in the rotated image; fall back to the box.
+        for key in ('chars', 'text_top', 'text_h'):
+            r.pop(key, None)
         old_b = r['bbox']
         rx, ry = old_b['x'], old_b['y']
         rw, rh = old_b['w'], old_b['h']
@@ -232,7 +302,7 @@ class LiveScanWorker(QThread):
                         future = executor.submit(run_ocr_oriented, frame, self.manga_mode)
 
                     if changed:
-                        items = [{k: t[k] for k in ('text', 'confidence', 'bbox')} for t in tracked]
+                        items = [{k: v for k, v in t.items() if k not in ('patch', 'misses')} for t in tracked]
                         self.results_changed.emit(items, frame)
 
                     self._stop.wait(max(0.0, self.TICK_SECONDS - (time.monotonic() - started)))

@@ -419,8 +419,10 @@ class PinyinOverlayWindow(QWidget):
         font.setLetterSpacing(QFont.AbsoluteSpacing, 0)
         return font, QFontMetrics(font)
 
-    def _label_y(self, y: int, h: int, th: int, margin: int) -> int:
-        ly = y - th + 2
+    def _label_y(self, y: int, h: int, th: int, margin: int, measured=False) -> int:
+        # A measured y is the top of the ink, so sit right on it; a detector box
+        # has padding above the glyphs, so overlap it slightly.
+        ly = y - th + (0 if measured else 2)
         if ly < margin:
             ly = y + 1
         return max(margin, min(ly, self.height() - th - margin))
@@ -446,6 +448,11 @@ class PinyinOverlayWindow(QWidget):
         return QColor(235, 35, 30, 250), QColor(255, 250, 225, 240)
 
     def _iter_char_labels(self, res):
+        if res.get("chars"):
+            # Measured glyph positions from the OCR engine (see _add_glyph_geometry).
+            return [{"pinyin": py, "x": c["x"], "y": res["text_top"], "w": c["w"], "h": res["text_h"],
+                     "measured": True}
+                    for c, py in zip(res["chars"], self._char_pinyin("".join(c["ch"] for c in res["chars"])))]
         text = res.get("text", "").strip()
         cjk = self._cjk_text(text)
         if not cjk:
@@ -489,7 +496,7 @@ class PinyinOverlayWindow(QWidget):
                 p.setFont(font)
                 th = fm.height() + 1
                 lx = max(margin, min(x, self.width() - max(w, 1) - margin))
-                ly = self._label_y(y, h, th, margin)
+                ly = self._label_y(y, h, th, margin, label.get("measured", False))
                 rect = QRect(lx, ly, max(1, w), th)
 
                 text_rect = rect.adjusted(1, 0, -1, 0)
