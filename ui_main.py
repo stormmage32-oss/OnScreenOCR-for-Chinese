@@ -1,7 +1,7 @@
 import sys
 import keyboard
 import logging
-from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QFrame,
                              QLabel, QPushButton, QCheckBox, QLineEdit, QDialog,
                              QMessageBox, QProgressDialog, QSystemTrayIcon, QMenu, QAction, QApplication)
 from PyQt5.QtCore import Qt, QObject, pyqtSignal, QThread, QTimer, QRect
@@ -12,6 +12,7 @@ from ocr_engine import init_ocr, take_screenshot, OCRWorker, LiveScanWorker
 from dictionary import segment_ocr_results
 from ui_overlay import RegionSelector, OverlayWindow, PinyinOverlayWindow, LivePinyinOverlayWindow
 from word_notebook import WordNotebookWindow
+from screens import to_physical
 
 logger = logging.getLogger("OCRApp")
 
@@ -45,18 +46,28 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Chinese Screen OCR")
-        self.setFixedSize(520, 620)
+        self._fit_to_screen()
         self.setStyleSheet("QMainWindow,QWidget{background:#FAF4EB;color:#4A3F35;}")
         self.ocr_ready = False; self.overlay = None; self.pinyin_overlay = None; self._worker = None
         self._active_screen_rect = None; self._ocr_mode = "normal"; self.seamless_overlay = None
-        self.live_overlay = None; self._live_worker = None
+        self.live_overlay = None; self._live_worker = None; self._capture_scale = 1.0
         self.config = load_config()
         self._build(); self._start_init()
         self._setup_hotkey()
         self._setup_tray()
 
+    def _fit_to_screen(self):
+        # At high display scaling the logical screen can be shorter than the
+        # window; the content then scrolls instead of running off-screen.
+        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        avail = screen.availableGeometry().height() - 40 if screen else 620
+        self.setFixedSize(520, max(300, min(620, avail)))
+
     def _build(self):
-        root = QWidget(); self.setCentralWidget(root)
+        root = QWidget()
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(root); self.setCentralWidget(scroll)
         vb = QVBoxLayout(root); vb.setContentsMargins(48,40,48,40)
         vb.setSpacing(0); vb.setAlignment(Qt.AlignCenter)
         t = QLabel("Chinese Screen OCR"); t.setFont(QFont("Arial",22,QFont.Bold))
@@ -249,7 +260,9 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(150, lambda: self._do_cap(x,y,w,h))
 
     def _do_cap(self, x, y, w, h):
-        try: img = take_screenshot((x,y,w,h))
+        # x, y, w, h are Qt logical pixels; the screenshot needs physical pixels.
+        physical, self._capture_scale = to_physical(QRect(x, y, w, h))
+        try: img = take_screenshot(physical)
         except Exception as e:
             self._ocr_mode = "normal"
             self.show(); self._set_buttons(True)
@@ -286,7 +299,8 @@ class MainWindow(QMainWindow):
             self.show(); self._set_buttons(True)
             if not r: QMessageBox.information(self,"Result","No text found."); return
             word_results = segment_ocr_results(r)
-            self.overlay = OverlayWindow(img, word_results, main_win=self, screen_rect=self._active_screen_rect)
+            self.overlay = OverlayWindow(img, word_results, main_win=self, screen_rect=self._active_screen_rect,
+                                         scale=self._capture_scale)
             self.overlay.show()
             if self._active_screen_rect:
                 self.overlay.setGeometry(self._active_screen_rect)
@@ -389,7 +403,8 @@ class MainWindow(QMainWindow):
             self.seamless_overlay.close()
         word_results = segment_ocr_results(results)
         overlay = OverlayWindow(image, word_results, main_win=None,
-                                screen_rect=self._active_screen_rect, seamless=True)
+                                screen_rect=self._active_screen_rect, seamless=True,
+                                scale=self._capture_scale)
         self.seamless_overlay = overlay
 
         def closed(*_):
@@ -438,7 +453,8 @@ class MainWindow(QMainWindow):
         s = self._screen_rect_for_action()
         self.live_overlay = LivePinyinOverlayWindow(s)
         self.live_overlay.show()
-        self._live_worker = LiveScanWorker((s.x(), s.y(), s.width(), s.height()),
+        physical, _ = to_physical(s)
+        self._live_worker = LiveScanWorker(physical,
                                            manga_mode=self.config.get('manga_mode', False))
         self._live_worker.results_changed.connect(self.live_overlay.set_results)
         self._live_worker.start()

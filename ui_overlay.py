@@ -3,47 +3,42 @@ import logging
 import numpy as np
 from PyQt5.QtWidgets import (QWidget, QMainWindow, QVBoxLayout, QHBoxLayout, QLabel, 
                              QPushButton, QFrame, QScrollArea, QApplication, QRubberBand)
-from PyQt5.QtCore import Qt, QPoint, QRect, QSize, pyqtSignal, QTimer, QEvent
-from PyQt5.QtGui import QFont, QFontMetrics, QColor, QBrush, QPen, QImage, QPixmap, QPainter
+from PyQt5.QtCore import Qt, QObject, QPoint, QRect, QSize, pyqtSignal, QTimer, QEvent
+from PyQt5.QtGui import QFont, QFontMetrics, QColor, QBrush, QPen, QImage, QPixmap, QPainter, QCursor
 
 from dictionary import lookup_hsk, HSK_COLORS, get_pinyin, get_char_weight
 from word_notebook import save_word
 from ui_components import HoverTooltip, DetailPopup, _clamp_popup
+from screens import scale_results
 
 logger = logging.getLogger("OCRApp")
 
-class RegionSelector(QWidget):
-    region_selected = pyqtSignal(int, int, int, int)
-    cancelled = pyqtSignal()
+class _ScreenSelector(QWidget):
+    """Dimmed selection layer covering exactly one monitor."""
+    finished = pyqtSignal(object)  # logical global QRect, or None when cancelled
 
-    def __init__(self):
+    def __init__(self, screen):
         super().__init__()
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.BypassWindowManagerHint | Qt.Tool)
-        virtual_rect = QRect()
-        for screen in QApplication.screens():
-            virtual_rect = virtual_rect.united(screen.geometry())
-        self.setGeometry(virtual_rect)
-        
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.screen_geometry = screen.geometry()
+        self.setGeometry(self.screen_geometry)
         self.setCursor(Qt.CrossCursor)
         self.setWindowOpacity(0.35)
         self.setStyleSheet("background:#D4C5B0;")
         self.origin = QPoint()
         self.rubber = QRubberBand(QRubberBand.Rectangle, self)
         self.selecting = False
-        
+
         self.lbl = QLabel("  Drag: Select region  |  Double click: Full screen  |  ESC: Cancel  ", self)
         self.lbl.setStyleSheet("color:#4A3F35;background:rgba(250,244,235,220);padding:8px 16px;"
                           "border-radius:6px;font-size:14px;font-weight:bold;")
         self.lbl.adjustSize(); self.lbl.move(20, 20)
 
     def keyPressEvent(self, e):
-        if e.key() == Qt.Key_Escape: self.close(); self.cancelled.emit()
+        if e.key() == Qt.Key_Escape: self.finished.emit(None)
 
     def mouseDoubleClickEvent(self, e):
-        screen = QApplication.screenAt(e.globalPos()) or QApplication.primaryScreen()
-        s = screen.geometry()
-        self.close()
-        self.region_selected.emit(s.x(), s.y(), s.width(), s.height())
+        self.finished.emit(QRect(self.screen_geometry))
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
@@ -51,9 +46,12 @@ class RegionSelector(QWidget):
             self.rubber.setGeometry(QRect(self.origin, QSize()))
             self.rubber.show(); self.selecting = True
 
+    def _drag_rect(self, pos):
+        return QRect(self.origin, pos).normalized().intersected(self.rect())
+
     def mouseMoveEvent(self, e):
         if self.selecting:
-            rect = QRect(self.origin, e.pos()).normalized()
+            rect = self._drag_rect(e.pos())
             self.rubber.setGeometry(rect)
             self.lbl.setText(f"  Drag: Select region  |  Size: {rect.width()} x {rect.height()} px  |  ESC: Cancel  ")
             self.lbl.adjustSize()
@@ -61,19 +59,58 @@ class RegionSelector(QWidget):
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton and self.selecting:
             self.selecting = False
-            rect = QRect(self.origin, e.pos()).normalized()
-            self.rubber.hide(); self.close()
+            rect = self._drag_rect(e.pos())
+            self.rubber.hide()
             if rect.width() > 5 and rect.height() > 5:
-                gx = self.geometry().x() + rect.x()
-                gy = self.geometry().y() + rect.y()
-                self.region_selected.emit(gx, gy, rect.width(), rect.height())
+                self.finished.emit(rect.translated(self.screen_geometry.topLeft()))
             else:
-                self.cancelled.emit()
+                self.finished.emit(None)
+
+
+class RegionSelector(QObject):
+    """Region picker with one layer per monitor.
+
+    A single window spanning every monitor is mis-placed by Qt 5 once Windows
+    display scaling is involved (each screen keeps its own scale factor), so
+    each monitor gets its own layer, whose coordinates are always consistent.
+    Emits logical global coordinates; screens.to_physical() converts them.
+    """
+    region_selected = pyqtSignal(int, int, int, int)
+    cancelled = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.windows = []
+        for screen in QApplication.screens():
+            w = _ScreenSelector(screen)
+            w.finished.connect(self._finish)
+            self.windows.append(w)
+
+    def show(self):
+        for w in self.windows:
+            w.show()
+        # Give keyboard focus (for ESC) to the layer under the mouse.
+        for w in self.windows:
+            if w.screen_geometry.contains(QCursor.pos()):
+                w.activateWindow(); w.raise_()
+
+    def close(self):
+        for w in self.windows:
+            w.close()
+
+    def _finish(self, rect):
+        self.close()
+        if rect is None:
+            self.cancelled.emit()
+        else:
+            self.region_selected.emit(rect.x(), rect.y(), rect.width(), rect.height())
 
 class OCRCanvas(QLabel):
-    def __init__(self, image: np.ndarray, results: list):
+    def __init__(self, image: np.ndarray, results: list, scale: float = 1.0):
+        """image/results are in physical pixels; scale = physical px per logical px."""
         super().__init__()
-        self.results = results
+        self.results = scale_results(results, 1.0 / scale)
+        self._scale = scale
         self.hovered_idx = -1
         self.setMouseTracking(True)
         self.drag_start = None
@@ -85,7 +122,9 @@ class OCRCanvas(QLabel):
         self._img_bytes = image.tobytes()
         qimg = QImage(self._img_bytes, w, h, 3*w, QImage.Format_RGB888)
         self.base_px = QPixmap.fromImage(qimg)
-        self.setFixedSize(w, h)
+        # Show the screenshot at its true on-screen size, still at full resolution.
+        self.base_px.setDevicePixelRatio(scale)
+        self.setFixedSize(round(w / scale), round(h / scale))
         
         self._hover_tooltip = HoverTooltip()
         self._hover_timer = QTimer(self)
@@ -97,6 +136,7 @@ class OCRCanvas(QLabel):
 
     def _repaint(self):
         pm = self.base_px.copy()
+        pm.setDevicePixelRatio(self._scale)
         p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
         font = QFont("Microsoft YaHei", 9); p.setFont(font); fm = p.fontMetrics()
         for i, res in enumerate(self.results):
@@ -260,8 +300,10 @@ class OverlayWindow(QMainWindow):
     """OCR result window; seamless mode keeps controls hidden until the top edge is reached."""
     seamless_closed = pyqtSignal()
 
-    def __init__(self, image: np.ndarray, results: list, main_win=None, screen_rect=None, seamless=False):
+    def __init__(self, image: np.ndarray, results: list, main_win=None, screen_rect=None, seamless=False,
+                 scale: float = 1.0):
         super().__init__()
+        self._scale = scale
         self.main_win = main_win
         self.screen_rect = screen_rect
         self.seamless = seamless
@@ -277,7 +319,10 @@ class OverlayWindow(QMainWindow):
         if screen_rect:
             self.setGeometry(screen_rect)
         else:
-            self.resize(min(w+40,1440), min(h+80,960))
+            screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+            avail = screen.availableGeometry()
+            self.resize(min(round(w / scale) + 40, avail.width() - 40),
+                        min(round(h / scale) + 80, avail.height() - 40))
         self._build(image, results)
         if self.seamless:
             self.setMouseTracking(True)
@@ -323,7 +368,7 @@ class OverlayWindow(QMainWindow):
             il.setContentsMargins(0, 0, 0, 0)
         else:
             il.setContentsMargins(20, 20, 20, 20)
-        self.canvas = OCRCanvas(image, results); il.addWidget(self.canvas)
+        self.canvas = OCRCanvas(image, results, self._scale); il.addWidget(self.canvas)
         sc.setWidget(inner); vb.addWidget(sc)
         if self.seamless:
             # The canvas consumes mouse moves, so observe it as well as the window.
@@ -373,9 +418,8 @@ class OverlayWindow(QMainWindow):
 class PinyinOverlayWindow(QWidget):
     def __init__(self, results: list, screen_rect: QRect, image=None, parent=None):
         super().__init__(parent)
-        self.results = results
         self.screen_rect = screen_rect
-        self.image = image
+        self._set_data(results, image)
         self.setWindowFlags(
             Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
@@ -385,6 +429,12 @@ class PinyinOverlayWindow(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setGeometry(screen_rect)
+
+    def _set_data(self, results, image):
+        # OCR runs on physical pixels; this window is laid out in logical ones.
+        self.image = image
+        self._scale = image.shape[1] / max(1, self.screen_rect.width()) if image is not None else 1.0
+        self.results = scale_results(results, 1.0 / self._scale)
 
     @staticmethod
     def _cjk_text(text: str) -> str:
@@ -432,6 +482,9 @@ class PinyinOverlayWindow(QWidget):
             return QColor(235, 45, 35, 245), QColor(255, 248, 230, 235)
 
         h, w = self.image.shape[:2]
+        s = self._scale
+        rect = QRect(int(rect.left() * s), int(rect.top() * s),
+                     max(1, int(rect.width() * s)), max(1, int(rect.height() * s)))
         x1 = max(0, min(rect.left(), w - 1))
         y1 = max(0, min(rect.top(), h - 1))
         x2 = max(x1 + 1, min(rect.right() + 1, w))
@@ -530,8 +583,7 @@ class LivePinyinOverlayWindow(PinyinOverlayWindow):
         self._exclude_from_capture()
 
     def set_results(self, results, image):
-        self.results = results
-        self.image = image
+        self._set_data(results, image)
         self.update()
 
     def showEvent(self, event):

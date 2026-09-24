@@ -44,6 +44,10 @@ logger = logging.getLogger("OCRApp")
 from ui_main import MainWindow
 
 def main():
+    # Use the exact Windows scale (125%, 150%, 175%...) instead of Qt 5's default
+    # rounding to 1x/2x, which made the UI too small or larger than the screen.
+    if hasattr(Qt, 'HighDpiScaleFactorRoundingPolicy'):
+        QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
