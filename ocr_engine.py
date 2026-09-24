@@ -3,6 +3,8 @@ import sys
 import time
 import logging
 import threading
+import hashlib
+from collections import OrderedDict
 import numpy as np
 import mss
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -59,23 +61,83 @@ def init_ocr() -> bool:
         logger.exception(f"[WARNING] PaddleOCR failed: {e}")
         return False
 
-def run_ocr(image: np.ndarray) -> list:
+def run_ocr(image: np.ndarray, rec_cache=None) -> list:
+    """rec_cache: optional RecognitionCache reused across calls (live mode)."""
     if OCR_ENGINE is None:
         return []
     try:
         if OCR_TYPE == 'paddle':
             with _OCR_LOCK:
-                return _parse_paddle(image)
+                return _parse_paddle(image, rec_cache)
     except Exception as e:
         logger.error(f"[OCR] Error: {e}")
     return []
 
-def _parse_paddle(image):
+class RecognitionCache:
+    """Recognition results keyed by the exact pixels of a detected text line.
+
+    Recognition is ~90% of an OCR pass. On a live screen most lines are
+    unchanged between passes, so only new or changed lines are recognized.
+    """
+    def __init__(self, max_entries=1024):
+        self._items = OrderedDict()
+        self._max = max_entries
+
+    @staticmethod
+    def key(crop: np.ndarray) -> bytes:
+        return hashlib.blake2b(crop.tobytes(), digest_size=16).digest() + repr(crop.shape).encode()
+
+    def get(self, key):
+        value = self._items.get(key)
+        if value is not None:
+            self._items.move_to_end(key)
+        return value
+
+    def put(self, key, value):
+        self._items[key] = value
+        while len(self._items) > self._max:
+            self._items.popitem(last=False)
+
+
+def _paddle_lines_cached(image, cache: RecognitionCache):
+    """Same output as PaddleOCR.ocr(image)[0], recognizing only uncached lines."""
+    import copy
+    from tools.infer.predict_system import sorted_boxes  # on sys.path once paddleocr is imported
+    from tools.infer.utility import get_rotate_crop_image, get_minarea_rect_crop
+    engine = OCR_ENGINE
+    dt_boxes, _ = engine.text_detector(image)
+    if dt_boxes is None or len(dt_boxes) == 0:
+        return []
+    dt_boxes = sorted_boxes(dt_boxes)
+    crop_fn = get_rotate_crop_image if engine.args.det_box_type == "quad" else get_minarea_rect_crop
+    crops = [crop_fn(image, copy.deepcopy(box)) for box in dt_boxes]
+    keys = [cache.key(crop) for crop in crops]
+    results = [cache.get(k) for k in keys]
+    missing = [i for i, r in enumerate(results) if r is None]
+    if missing:
+        todo = [crops[i] for i in missing]
+        if engine.use_angle_cls:
+            todo, _, _ = engine.text_classifier(todo)
+        recognized, _ = engine.text_recognizer(todo)
+        for i, rec in zip(missing, recognized):
+            results[i] = rec
+            cache.put(keys[i], rec)
+    return [[box.tolist(), rec] for box, rec in zip(dt_boxes, results) if rec[1] >= engine.drop_score]
+
+
+def _parse_paddle(image, rec_cache=None):
     items = []
-    try: raw = OCR_ENGINE.ocr(image, cls=True)
-    except TypeError: raw = OCR_ENGINE.ocr(image)
-    if not raw: return items
-    lines = raw[0] if isinstance(raw, list) and raw and isinstance(raw[0], list) else raw
+    if rec_cache is not None:
+        try:
+            lines = _paddle_lines_cached(image, rec_cache)
+        except Exception as e:
+            logger.warning(f"[OCR] Cached recognition unavailable, using full OCR: {e}")
+            rec_cache = None
+    if rec_cache is None:
+        try: raw = OCR_ENGINE.ocr(image, cls=True)
+        except TypeError: raw = OCR_ENGINE.ocr(image)
+        if not raw: return items
+        lines = raw[0] if isinstance(raw, list) and raw and isinstance(raw[0], list) else raw
     if lines is None: return items
     for line in lines:
         try:
@@ -163,11 +225,11 @@ def take_screenshot(region=None) -> np.ndarray:
         img = np.array(shot)[:, :, :3][:, :, ::-1]
         return img.copy()
 
-def run_ocr_oriented(image: np.ndarray, manga_mode=False) -> list:
+def run_ocr_oriented(image: np.ndarray, manga_mode=False, rec_cache=None) -> list:
     """Run OCR; in manga mode rotate for vertical text and map boxes back."""
     if not manga_mode:
-        return run_ocr(image)
-    res = run_ocr(np.ascontiguousarray(np.rot90(image, k=-1)))
+        return run_ocr(image, rec_cache)
+    res = run_ocr(np.ascontiguousarray(np.rot90(image, k=-1)), rec_cache)
     h = image.shape[0]
     for r in res:
         # Glyph geometry is measured in the rotated image; fall back to the box.
@@ -262,6 +324,7 @@ class LiveScanWorker(QThread):
     def run(self):
         from concurrent.futures import ThreadPoolExecutor
         executor = ThreadPoolExecutor(max_workers=1)
+        rec_cache = RecognitionCache()
         tracked = []
         future = None
         ocr_gray = None
@@ -271,8 +334,9 @@ class LiveScanWorker(QThread):
             with mss.mss() as sct:
                 while not self._stop.is_set():
                     started = time.monotonic()
-                    frame = np.array(sct.grab(self.monitor))[:, :, :3][:, :, ::-1].copy()
-                    gray = frame[:, :, 1]
+                    bgra = np.array(sct.grab(self.monitor))
+                    gray = bgra[:, :, 1]  # green channel: same index in BGRA and RGB
+                    rgb = None  # full RGB copy only when OCR or the overlay needs it
                     changed = False
 
                     # 1) Drop labels whose characters are no longer on screen.
@@ -299,11 +363,14 @@ class LiveScanWorker(QThread):
                         ocr_gray = gray
                         last_ocr_small = small
                         last_ocr_time = started
-                        future = executor.submit(run_ocr_oriented, frame, self.manga_mode)
+                        rgb = bgra[:, :, 2::-1].copy()
+                        future = executor.submit(run_ocr_oriented, rgb, self.manga_mode, rec_cache)
 
                     if changed:
+                        if rgb is None:
+                            rgb = bgra[:, :, 2::-1].copy()
                         items = [{k: v for k, v in t.items() if k not in ('patch', 'misses')} for t in tracked]
-                        self.results_changed.emit(items, frame)
+                        self.results_changed.emit(items, rgb)
 
                     self._stop.wait(max(0.0, self.TICK_SECONDS - (time.monotonic() - started)))
         except Exception as e:

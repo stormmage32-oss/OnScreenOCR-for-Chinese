@@ -1,5 +1,7 @@
 import sys
 import logging
+from collections import OrderedDict
+from functools import lru_cache
 import numpy as np
 from PyQt5.QtWidgets import (QWidget, QMainWindow, QVBoxLayout, QHBoxLayout, QLabel, 
                              QPushButton, QFrame, QScrollArea, QApplication, QRubberBand)
@@ -12,6 +14,54 @@ from ui_components import HoverTooltip, DetailPopup, _clamp_popup
 from screens import scale_results
 
 logger = logging.getLogger("OCRApp")
+
+
+@lru_cache(maxsize=4096)
+def _fit_font(py: str, box_w: int, box_h: int):
+    """Largest font (shrinking size, then width) that fits the pinyin in box_w."""
+    target_w = max(3, box_w - 1)
+    base_size = max(5, min(10, int(box_h * 0.38)))
+    for size in range(base_size, 3, -1):
+        for stretch in (100, 90, 80, 70, 60, 50):
+            font = QFont("Segoe UI", size, QFont.Normal)
+            font.setStretch(stretch)
+            font.setLetterSpacing(QFont.AbsoluteSpacing, 0)
+            fm = QFontMetrics(font)
+            if fm.horizontalAdvance(py) <= target_w:
+                return font, fm
+    font = QFont("Segoe UI", 4, QFont.Normal)
+    font.setStretch(45)
+    font.setLetterSpacing(QFont.AbsoluteSpacing, 0)
+    return font, QFontMetrics(font)
+
+
+_LABEL_CACHE = OrderedDict()
+
+
+def _label_pixmap(py: str, w: int, th: int, font: QFont, fill: QColor, outline: QColor, dpr: float) -> QPixmap:
+    """Outlined pinyin label, rendered once and reused (five drawText calls each otherwise)."""
+    key = (py, w, th, font.pointSize(), font.stretch(), fill.rgba(), outline.rgba(), dpr)
+    pm = _LABEL_CACHE.get(key)
+    if pm is not None:
+        _LABEL_CACHE.move_to_end(key)
+        return pm
+    pm = QPixmap(max(1, round(w * dpr)), max(1, round(th * dpr)))
+    pm.setDevicePixelRatio(dpr)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setFont(font)
+    text_rect = QRect(0, 0, w, th).adjusted(1, 0, -1, 0)
+    p.setPen(outline)
+    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        p.drawText(text_rect.translated(dx, dy), Qt.AlignCenter, py)
+    p.setPen(fill)
+    p.drawText(text_rect, Qt.AlignCenter, py)
+    p.end()
+    _LABEL_CACHE[key] = pm
+    if len(_LABEL_CACHE) > 4096:
+        _LABEL_CACHE.popitem(last=False)
+    return pm
 
 class _ScreenSelector(QWidget):
     """Dimmed selection layer covering exactly one monitor."""
@@ -454,20 +504,7 @@ class PinyinOverlayWindow(QWidget):
             return joined.split() if joined else []
 
     def _font_for(self, py: str, box_w: int, box_h: int):
-        target_w = max(3, box_w - 1)
-        base_size = max(5, min(10, int(box_h * 0.38)))
-        for size in range(base_size, 3, -1):
-            for stretch in (100, 90, 80, 70, 60, 50):
-                font = QFont("Segoe UI", size, QFont.Normal)
-                font.setStretch(stretch)
-                font.setLetterSpacing(QFont.AbsoluteSpacing, 0)
-                fm = QFontMetrics(font)
-                if fm.horizontalAdvance(py) <= target_w:
-                    return font, fm
-        font = QFont("Segoe UI", 4, QFont.Normal)
-        font.setStretch(45)
-        font.setLetterSpacing(QFont.AbsoluteSpacing, 0)
-        return font, QFontMetrics(font)
+        return _fit_font(py, box_w, box_h)
 
     def _label_y(self, y: int, h: int, th: int, margin: int, measured=False) -> int:
         # A measured y is the top of the ink, so sit right on it; a detector box
@@ -538,30 +575,21 @@ class PinyinOverlayWindow(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
         margin = 4
+        dpr = self.devicePixelRatioF()
 
         for res in sorted(self.results, key=lambda item: (item["bbox"]["y"], item["bbox"]["x"])):
             for label in self._iter_char_labels(res):
                 py = label["pinyin"]
                 x, y, w, h = label["x"], label["y"], label["w"], label["h"]
                 font, fm = self._font_for(py, w, h)
-                p.setFont(font)
                 th = fm.height() + 1
                 lx = max(margin, min(x, self.width() - max(w, 1) - margin))
                 ly = self._label_y(y, h, th, margin, label.get("measured", False))
                 rect = QRect(lx, ly, max(1, w), th)
 
-                text_rect = rect.adjusted(1, 0, -1, 0)
                 fill, outline = self._adaptive_colors(rect)
-                p.save()
-                p.setClipRect(rect)
-                p.setPen(outline)
-                for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                    p.drawText(text_rect.translated(dx, dy), Qt.AlignCenter, py)
-                p.setPen(fill)
-                p.drawText(text_rect, Qt.AlignCenter, py)
-                p.restore()
+                p.drawPixmap(rect.topLeft(), _label_pixmap(py, rect.width(), th, font, fill, outline, dpr))
 
         p.end()
 
