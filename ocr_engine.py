@@ -43,22 +43,17 @@ def init_ocr() -> bool:
             {"lang": "ch"},
         ]
         last_error = None
-        from paddle import inference
-        create_predictor = inference.create_predictor
-        inference.create_predictor = _create_predictor_hook(create_predictor)
-        try:
-            for kwargs in init_attempts:
-                try:
-                    OCR_ENGINE = PaddleOCR(**kwargs)
-                    break
-                except Exception as attempt_error:
-                    last_error = attempt_error
-                    OCR_ENGINE = None
-        finally:
-            inference.create_predictor = create_predictor
+        for kwargs in init_attempts:
+            try:
+                OCR_ENGINE = PaddleOCR(**kwargs)
+                break
+            except Exception as attempt_error:
+                last_error = attempt_error
+                OCR_ENGINE = None
         if OCR_ENGINE is None:
             raise last_error
-        _bound_rec_shapes(OCR_ENGINE.text_recognizer)
+        _bound_cls_shapes(OCR_ENGINE)
+        _bound_rec_shapes(OCR_ENGINE)
         dummy = np.zeros((64, 200, 3), dtype=np.uint8)
         try: OCR_ENGINE.ocr(dummy, cls=True)
         except TypeError: OCR_ENGINE.ocr(dummy)
@@ -69,30 +64,43 @@ def init_ocr() -> bool:
         logger.exception(f"[WARNING] PaddleOCR failed: {e}")
         return False
 
-def _create_predictor_hook(create_predictor):
-    """Wrap paddle.inference.create_predictor to run the angle classifier without oneDNN.
+def _full_batches(predictor, batch_size, filler):
+    """Call predictor with its image list padded to whole batches of batch_size.
 
-    Paddle enables oneDNN even with enable_mkldnn=False. With the detector,
-    classifier and recognizer all on oneDNN and run one after another, memory
-    grew ~7 MB per OCR pass; any two of them alone barely grow. Taking the
-    tiny classifier off oneDNN removes the growth at no measurable speed cost.
+    A short last batch is a new input shape, and Paddle Inference keeps memory
+    for every input shape it sees (oneDNN is on even with enable_mkldnn=False).
+    The filler images' results are dropped from every list in the output.
     """
-    def create(config):
-        if 'cls' in os.path.basename(os.path.dirname(config.prog_file())):
-            config.disable_mkldnn()
-        return create_predictor(config)
-    return create
+    def call(img_list):
+        count = len(img_list)
+        out = predictor(list(img_list) + [filler] * (-count % batch_size))
+        return tuple(o[:count] if isinstance(o, list) else o for o in out)
+    return call
 
 
-def _bound_rec_shapes(rec):
+def _bound_cls_shapes(engine):
+    """Feed the angle classifier a single input shape.
+
+    It resizes every crop to the same size, so only the batch size varied;
+    with that fixed it can stay on oneDNN without growing memory.
+    """
+    cls = getattr(engine, 'text_classifier', None)
+    if cls is None:
+        return
+    _, h, w = cls.cls_image_shape
+    engine.text_classifier = _full_batches(cls, cls.cls_batch_num,
+                                           np.full((h, w, 3), 255, np.uint8))
+
+
+def _bound_rec_shapes(engine):
     """Feed the recognizer only a handful of input shapes.
 
-    Paddle Inference keeps memory for every input shape it sees (oneDNN is on
-    even with enable_mkldnn=False). Batches of up to 6 crops padded to the
-    widest one make nearly every batch a new shape, which leaked ~20 MB per OCR
-    pass. One crop per batch, padded to a width from a short geometric series,
-    leaves about a dozen shapes, and is faster since crops are padded less.
+    Batches of up to 6 crops padded to the widest one made nearly every batch
+    a new shape, which leaked ~20 MB per OCR pass. Full batches of 3, padded to
+    a width from a short geometric series, leave a bounded set of shapes: about
+    as fast as before, for ~300 MB more memory than one crop per batch.
     """
+    rec = engine.text_recognizer
     if getattr(rec, 'rec_algorithm', None) != 'SVTR_LCNet':
         return  # other models take other preprocessing paths
     resize = rec.resize_norm_img
@@ -105,7 +113,10 @@ def _bound_rec_shapes(rec):
         return resize(img, width / height)
 
     rec.resize_norm_img = bucketed_resize
-    rec.rec_batch_num = 1
+    rec.rec_batch_num = 3
+    # Square filler sorts first by aspect ratio, into the narrowest bucket.
+    engine.text_recognizer = _full_batches(rec, rec.rec_batch_num,
+                                           np.full((height, height, 3), 255, np.uint8))
 
 
 _DET_BUCKET = 320  # detector input sides become multiples of this
@@ -206,7 +217,10 @@ def _paddle_lines_cached(image, cache: RecognitionCache):
 
 def _parse_paddle(image, rec_cache=None):
     items = []
-    image = _pad_for_detector(image)
+    if rec_cache is None:
+        # Live mode (the only caller with a cache) captures one fixed region,
+        # so its frames are a single detector shape already.
+        image = _pad_for_detector(image)
     if rec_cache is not None:
         try:
             lines = _paddle_lines_cached(image, rec_cache)
