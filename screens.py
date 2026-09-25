@@ -11,11 +11,9 @@ import ctypes
 from PyQt5.QtCore import QRect
 from PyQt5.QtWidgets import QApplication
 
-
-def _native_monitor_rects() -> dict:
-    """Physical rect of every monitor, keyed by device name (\\\\.\\DISPLAY1)."""
-    if sys.platform != 'win32':
-        return {}
+# Defined once: ctypes caches POINTER(type) forever, so a structure class
+# created per call would leak one cache entry every time.
+if sys.platform == 'win32':
     from ctypes import wintypes
 
     class MONITORINFOEXW(ctypes.Structure):
@@ -23,12 +21,19 @@ def _native_monitor_rects() -> dict:
                     ('rcWork', wintypes.RECT), ('dwFlags', wintypes.DWORD),
                     ('szDevice', wintypes.WCHAR * 32)]
 
-    user32 = ctypes.WinDLL('user32')
     MONITORENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
                                          ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
-    user32.EnumDisplayMonitors.argtypes = [wintypes.HDC, ctypes.POINTER(wintypes.RECT),
-                                           MONITORENUMPROC, wintypes.LPARAM]
-    user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFOEXW)]
+    _user32 = ctypes.WinDLL('user32')
+    _user32.EnumDisplayMonitors.argtypes = [wintypes.HDC, ctypes.POINTER(wintypes.RECT),
+                                            MONITORENUMPROC, wintypes.LPARAM]
+    _user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFOEXW)]
+
+
+def _native_monitor_rects() -> dict:
+    """Physical rect of every monitor, keyed by device name (\\\\.\\DISPLAY1)."""
+    if sys.platform != 'win32':
+        return {}
+    user32 = _user32
     rects = {}
 
     def callback(hmonitor, _hdc, _rect, _lparam):

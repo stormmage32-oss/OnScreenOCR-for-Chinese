@@ -1,11 +1,14 @@
 import requests
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QThread, QCoreApplication, pyqtSignal
 
 class TranslationWorker(QThread):
-    finished = pyqtSignal(str, bool)
+    translated = pyqtSignal(str, bool)
 
     def __init__(self, text, api_key):
-        super().__init__()
+        # Owned by the application and deleted once finished, so it neither
+        # leaks nor gets destroyed mid-request when its popup closes.
+        super().__init__(QCoreApplication.instance())
+        self.finished.connect(self.deleteLater)
         self.text = text
         self.api_key = api_key
 
@@ -18,8 +21,8 @@ class TranslationWorker(QThread):
             resp.raise_for_status()
             res_json = resp.json()
             if "translations" in res_json and len(res_json["translations"]) > 0:
-                self.finished.emit(res_json["translations"][0]["text"], True)
+                self.translated.emit(res_json["translations"][0]["text"], True)
             else:
-                self.finished.emit("No result obtained.", False)
+                self.translated.emit("No result obtained.", False)
         except Exception as e:
-            self.finished.emit(str(e), False)
+            self.translated.emit(str(e), False)

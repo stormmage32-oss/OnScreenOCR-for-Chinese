@@ -3,6 +3,7 @@ import logging
 from collections import OrderedDict
 from functools import lru_cache
 import numpy as np
+from PyQt5 import sip
 from PyQt5.QtWidgets import (QWidget, QMainWindow, QVBoxLayout, QHBoxLayout, QLabel, 
                              QPushButton, QFrame, QScrollArea, QApplication, QRubberBand)
 from PyQt5.QtCore import Qt, QObject, QPoint, QRect, QSize, pyqtSignal, QTimer, QEvent
@@ -169,8 +170,9 @@ class OCRCanvas(QLabel):
         self._click_token = 0
         self._detail_popup = None
         h, w = image.shape[:2]
-        self._img_bytes = image.tobytes()
-        qimg = QImage(self._img_bytes, w, h, 3*w, QImage.Format_RGB888)
+        # fromImage copies the pixels, so the buffer only has to outlive this call.
+        img_bytes = image.tobytes()
+        qimg = QImage(img_bytes, w, h, 3*w, QImage.Format_RGB888)
         self.base_px = QPixmap.fromImage(qimg)
         # Show the screenshot at its true on-screen size, still at full resolution.
         self.base_px.setDevicePixelRatio(scale)
@@ -321,11 +323,13 @@ class OCRCanvas(QLabel):
         }
 
     def _show_if_single_click(self, token, result):
-        if token == self._click_token:
+        # The window may have been closed (and deleted) during the delay.
+        if token == self._click_token and not sip.isdeleted(self):
             self._show_detail_popup(result)
 
     def _show_detail_popup(self, result):
-        if self._detail_popup is not None and self._detail_popup.isVisible():
+        # Popups delete themselves on close, so the old one may already be gone.
+        if self._detail_popup is not None and not sip.isdeleted(self._detail_popup):
             self._detail_popup.close()
         popup = DetailPopup(result, self)
         self._detail_popup = popup
@@ -374,10 +378,10 @@ class OverlayWindow(QMainWindow):
             self.resize(min(round(w / scale) + 40, avail.width() - 40),
                         min(round(h / scale) + 80, avail.height() - 40))
         self._build(image, results)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         if self.seamless:
             self.setMouseTracking(True)
             self._set_controls_visible(False)
-            self.setAttribute(Qt.WA_DeleteOnClose, True)
 
     def _build(self, image, results):
         cw = QWidget(); self.setCentralWidget(cw)

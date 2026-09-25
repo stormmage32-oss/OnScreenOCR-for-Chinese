@@ -1,6 +1,7 @@
 import sys
 import keyboard
 import logging
+from PyQt5 import sip
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QFrame,
                              QLabel, QPushButton, QCheckBox, QLineEdit, QDialog,
                              QMessageBox, QProgressDialog, QSystemTrayIcon, QMenu, QAction, QApplication)
@@ -51,6 +52,7 @@ class MainWindow(QMainWindow):
         self.ocr_ready = False; self.overlay = None; self.pinyin_overlay = None; self._worker = None
         self._active_screen_rect = None; self._ocr_mode = "normal"; self.seamless_overlay = None
         self.live_overlay = None; self._live_worker = None; self._capture_scale = 1.0
+        self._progress = None; self.notebook = None
         self.config = load_config()
         self._build(); self._start_init()
         self._setup_hotkey()
@@ -270,7 +272,13 @@ class MainWindow(QMainWindow):
         self._run_ocr(img)
 
     def _run_ocr(self, img):
+        # Dialogs parented to the main window live as long as it does unless
+        # deleted, so every transient one here is WA_DeleteOnClose.
+        if self._progress is not None and not sip.isdeleted(self._progress):
+            self._progress.close()  # an aborted scan's dialog is never closed by its worker
         prog = QProgressDialog("Processing OCR...", None, 0, 0, self)
+        prog.setAttribute(Qt.WA_DeleteOnClose)
+        self._progress = prog
         prog.setWindowModality(Qt.ApplicationModal)
         prog.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         prog.setStyleSheet("QProgressDialog{background:#FAF4EB;border:1px solid #D4C5B0;border-radius:10px;}"
@@ -287,11 +295,12 @@ class MainWindow(QMainWindow):
             
         manga_mode = self.config.get('manga_mode', False)
         w = OCRWorker(img, manga_mode); self._worker = w
+        del img  # the worker hands it back in done(); don't keep it in this closure
 
-        def done(r):
+        def done(r, img):
             prog.close()
             if self._ocr_mode == "pinyin":
-                self._show_pinyin_overlay(r)
+                self._show_pinyin_overlay(r, img)
                 return
             if self._ocr_mode == "seamless":
                 self._show_seamless_overlay(img, r)
@@ -299,8 +308,11 @@ class MainWindow(QMainWindow):
             self.show(); self._set_buttons(True)
             if not r: QMessageBox.information(self,"Result","No text found."); return
             word_results = segment_ocr_results(r)
+            if self.overlay is not None and not sip.isdeleted(self.overlay):
+                self.overlay.close()
             self.overlay = OverlayWindow(img, word_results, main_win=self, screen_rect=self._active_screen_rect,
                                          scale=self._capture_scale)
+            self.overlay.destroyed.connect(self._on_overlay_destroyed)
             self.overlay.show()
             if self._active_screen_rect:
                 self.overlay.setGeometry(self._active_screen_rect)
@@ -318,6 +330,12 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self,"OCR Error", m)
 
         w.finished.connect(done); w.error.connect(err); w.start()
+
+    def _on_overlay_destroyed(self, *_):
+        # Drop the Python wrapper too: it still holds the screenshot pixmap. A
+        # replaced overlay is destroyed after the new one is assigned, so check.
+        if self.overlay is not None and sip.isdeleted(self.overlay):
+            self.overlay = None
 
     def _setup_hotkey(self):
         self._remove_startup_hotkey_conflicts()
@@ -430,7 +448,7 @@ class MainWindow(QMainWindow):
         self._active_screen_rect = s
         QTimer.singleShot(150, lambda: self._do_cap(s.x(), s.y(), s.width(), s.height()))
 
-    def _show_pinyin_overlay(self, results):
+    def _show_pinyin_overlay(self, results, image):
         self._ocr_mode = "normal"
         self._set_buttons(True)
         if not results:
@@ -439,7 +457,7 @@ class MainWindow(QMainWindow):
             return
         if self.pinyin_overlay is not None:
             self.pinyin_overlay.close()
-        self.pinyin_overlay = PinyinOverlayWindow(results, self._active_screen_rect, image=self._worker.image)
+        self.pinyin_overlay = PinyinOverlayWindow(results, self._active_screen_rect, image=image)
         self.pinyin_overlay.destroyed.connect(lambda *_: setattr(self, "pinyin_overlay", None))
         self.pinyin_overlay.show()
 
@@ -456,12 +474,17 @@ class MainWindow(QMainWindow):
         physical, _ = to_physical(s)
         self._live_worker = LiveScanWorker(physical,
                                            manga_mode=self.config.get('manga_mode', False))
-        self._live_worker.results_changed.connect(self.live_overlay.set_results)
+        self._live_worker.results_changed.connect(self._on_live_results)
         self._live_worker.start()
         self.btn_live.setText("Stop Live Pinyin")
         self.act_live.setText("Stop Live Pinyin")
         # Hide the main window so the game is what's underneath the labels.
         self.hide()
+
+    def _on_live_results(self):
+        latest = self._live_worker.take_results() if self._live_worker is not None else None
+        if latest is not None and self.live_overlay is not None:
+            self.live_overlay.set_results(*latest)
 
     def _stop_live(self):
         worker, self._live_worker = self._live_worker, None
@@ -514,6 +537,7 @@ class MainWindow(QMainWindow):
     def _read_hotkey(self, title, config_key, label, label_prefix, listener):
         self.btn_r.setEnabled(False); self.btn_f.setEnabled(False)
         msg = QDialog(self, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        msg.setAttribute(Qt.WA_DeleteOnClose)
         msg.setStyleSheet("background:#FAF4EB; border:1px solid #C08B5C; border-radius:10px;")
         l = QVBoxLayout(msg)
         info = QLabel(title)
@@ -618,8 +642,16 @@ class MainWindow(QMainWindow):
                 self.show_and_raise()
 
     def _open_notebook(self):
-        self.notebook = WordNotebookWindow(self)
+        # Reuse the open notebook; a closed one deletes itself instead of
+        # staying alive as a hidden child of this window.
+        if self.notebook is None or sip.isdeleted(self.notebook):
+            self.notebook = WordNotebookWindow(self)
+            self.notebook.setAttribute(Qt.WA_DeleteOnClose)
+        else:
+            self.notebook.load_words()
         self.notebook.show()
+        self.notebook.raise_()
+        self.notebook.activateWindow()
 
     def closeEvent(self, event):
         if self.tray_icon.isVisible():

@@ -1,3 +1,4 @@
+from PyQt5 import sip
 from PyQt5.QtWidgets import QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QApplication, QPushButton, QGraphicsOpacityEffect
 from PyQt5.QtCore import Qt, QPoint, QTimer, QPropertyAnimation
 from PyQt5.QtGui import QFont
@@ -98,8 +99,12 @@ class CharCardWidget(QFrame):
             QTimer.singleShot(30, lambda: self._open_char_popup(gpos))
 
     def _open_char_popup(self, global_pos):
+        if sip.isdeleted(self):  # the enclosing popup closed during the delay
+            return
         result = {'text': self.ch, 'confidence': 1.0, 'original_sentence': ''}
-        popup = DetailPopup(result, parent=None)
+        # Parented so it outlives this local variable (a parentless popup was
+        # garbage-collected at once); WA_DeleteOnClose frees it when it closes.
+        popup = DetailPopup(result, parent=self.window())
         popup.adjustSize()
         px = global_pos.x() - popup.width() // 2
         py = global_pos.y() - popup.height() - 10
@@ -112,6 +117,7 @@ class DetailPopup(QDialog):
     def __init__(self, result: dict, parent=None):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_DeleteOnClose)
         text = result['text']
         conf = result.get('confidence', 0)
         info, src = lookup_word(text)
@@ -251,7 +257,7 @@ class DetailPopup(QDialog):
             cl.addWidget(self.tl_lbl)
 
             self.worker = TranslationWorker(text, config.get('deepl_api_key'))
-            self.worker.finished.connect(self._on_translation_done)
+            self.worker.translated.connect(self._on_translation_done)
             self.worker.start()
 
         cl.addWidget(QLabel(f"Accuracy: {int(conf*100)}%",

@@ -4,6 +4,7 @@ import time
 import logging
 import threading
 import hashlib
+import math
 from collections import OrderedDict
 import numpy as np
 import mss
@@ -42,15 +43,22 @@ def init_ocr() -> bool:
             {"lang": "ch"},
         ]
         last_error = None
-        for kwargs in init_attempts:
-            try:
-                OCR_ENGINE = PaddleOCR(**kwargs)
-                break
-            except Exception as attempt_error:
-                last_error = attempt_error
-                OCR_ENGINE = None
+        from paddle import inference
+        create_predictor = inference.create_predictor
+        inference.create_predictor = _create_predictor_hook(create_predictor)
+        try:
+            for kwargs in init_attempts:
+                try:
+                    OCR_ENGINE = PaddleOCR(**kwargs)
+                    break
+                except Exception as attempt_error:
+                    last_error = attempt_error
+                    OCR_ENGINE = None
+        finally:
+            inference.create_predictor = create_predictor
         if OCR_ENGINE is None:
             raise last_error
+        _bound_rec_shapes(OCR_ENGINE.text_recognizer)
         dummy = np.zeros((64, 200, 3), dtype=np.uint8)
         try: OCR_ENGINE.ocr(dummy, cls=True)
         except TypeError: OCR_ENGINE.ocr(dummy)
@@ -60,6 +68,77 @@ def init_ocr() -> bool:
     except Exception as e:
         logger.exception(f"[WARNING] PaddleOCR failed: {e}")
         return False
+
+def _create_predictor_hook(create_predictor):
+    """Wrap paddle.inference.create_predictor to run the angle classifier without oneDNN.
+
+    Paddle enables oneDNN even with enable_mkldnn=False. With the detector,
+    classifier and recognizer all on oneDNN and run one after another, memory
+    grew ~7 MB per OCR pass; any two of them alone barely grow. Taking the
+    tiny classifier off oneDNN removes the growth at no measurable speed cost.
+    """
+    def create(config):
+        if 'cls' in os.path.basename(os.path.dirname(config.prog_file())):
+            config.disable_mkldnn()
+        return create_predictor(config)
+    return create
+
+
+def _bound_rec_shapes(rec):
+    """Feed the recognizer only a handful of input shapes.
+
+    Paddle Inference keeps memory for every input shape it sees (oneDNN is on
+    even with enable_mkldnn=False). Batches of up to 6 crops padded to the
+    widest one make nearly every batch a new shape, which leaked ~20 MB per OCR
+    pass. One crop per batch, padded to a width from a short geometric series,
+    leaves about a dozen shapes, and is faster since crops are padded less.
+    """
+    if getattr(rec, 'rec_algorithm', None) != 'SVTR_LCNet':
+        return  # other models take other preprocessing paths
+    resize = rec.resize_norm_img
+    height = rec.rec_image_shape[1]
+
+    def bucketed_resize(img, max_wh_ratio):
+        width = 320
+        while width < height * max_wh_ratio:
+            width = int(width * 1.5)  # 320, 480, 720, 1080, 1620, ...
+        return resize(img, width / height)
+
+    rec.resize_norm_img = bucketed_resize
+    rec.rec_batch_num = 1
+
+
+_DET_BUCKET = 320  # detector input sides become multiples of this
+
+
+def _pad_for_detector(image: np.ndarray) -> np.ndarray:
+    """Pad the bottom/right so the detector sees one of a few input shapes.
+
+    Like the recognizer, the detector keeps ~15 MB for every input shape, and
+    each differently sized region selection is a new one. Padding only the
+    bottom/right, with the border colour, keeps box coordinates and the
+    detector's scale unchanged while limiting it to a handful of shapes.
+    """
+    args = getattr(OCR_ENGINE, 'args', None)
+    if args is None or getattr(args, 'det_limit_type', None) != 'max':
+        return image
+    limit = args.det_limit_side_len
+    h, w = image.shape[:2]
+    scale = min(1.0, limit / max(h, w))
+
+    def padded_side(side):
+        bucket = min(limit, math.ceil(side * scale / _DET_BUCKET) * _DET_BUCKET)
+        return max(side, math.ceil(bucket / scale))
+
+    ph, pw = padded_side(h), padded_side(w)
+    if (ph, pw) == (h, w):
+        return image
+    border = np.concatenate([image[0], image[-1], image[:, 0], image[:, -1]])
+    padded = np.empty((ph, pw) + image.shape[2:], dtype=image.dtype)
+    padded[...] = np.median(border, axis=0).astype(image.dtype)
+    padded[:h, :w] = image
+    return padded
+
 
 def run_ocr(image: np.ndarray, rec_cache=None) -> list:
     """rec_cache: optional RecognitionCache reused across calls (live mode)."""
@@ -127,6 +206,7 @@ def _paddle_lines_cached(image, cache: RecognitionCache):
 
 def _parse_paddle(image, rec_cache=None):
     items = []
+    image = _pad_for_detector(image)
     if rec_cache is not None:
         try:
             lines = _paddle_lines_cached(image, rec_cache)
@@ -248,7 +328,7 @@ def run_ocr_oriented(image: np.ndarray, manga_mode=False, rec_cache=None) -> lis
     return res
 
 class OCRWorker(QThread):
-    finished = pyqtSignal(list)
+    finished = pyqtSignal(list, object)  # results, the image they were read from
     error = pyqtSignal(str)
 
     def __init__(self, image, manga_mode=False):
@@ -261,11 +341,14 @@ class OCRWorker(QThread):
         self._is_aborted = True
 
     def run(self):
+        # Hand the screenshot over with the result; the worker outlives the scan
+        # and would otherwise keep a full-screen image alive until the next one.
+        image, self.image = self.image, None
         try:
             if self._is_aborted: return
-            res = run_ocr_oriented(self.image, self.manga_mode)
+            res = run_ocr_oriented(image, self.manga_mode)
             if self._is_aborted: return
-            self.finished.emit(res)
+            self.finished.emit(res, image)
         except Exception as e:
             if not self._is_aborted:
                 self.error.emit(str(e))
@@ -305,7 +388,7 @@ class LiveScanWorker(QThread):
     characters leave the screen; the slow OCR pass runs in the background
     whenever the screen changed since the previous pass.
     """
-    results_changed = pyqtSignal(list, object)  # items, current frame (RGB ndarray)
+    results_changed = pyqtSignal()  # fetch the update with take_results()
 
     TICK_SECONDS = 0.15
     MAX_MISSES = 3  # OCR passes an unchanged item may be missed before it is dropped
@@ -317,9 +400,26 @@ class LiveScanWorker(QThread):
         self.manga_mode = manga_mode
         self.min_ocr_interval = min_ocr_interval
         self._stop = threading.Event()
+        self._latest = None
+        self._latest_lock = threading.Lock()
 
     def stop(self):
         self._stop.set()
+
+    def take_results(self):
+        """(items, current frame as RGB ndarray) of the newest update, or None."""
+        with self._latest_lock:
+            latest, self._latest = self._latest, None
+        return latest
+
+    def _publish(self, items, rgb):
+        # Only the newest frame is kept, and a signal is queued only when none is
+        # pending, so a busy GUI thread cannot pile up full-screen frames.
+        with self._latest_lock:
+            pending = self._latest is not None
+            self._latest = (items, rgb)
+        if not pending:
+            self.results_changed.emit()
 
     def run(self):
         from concurrent.futures import ThreadPoolExecutor
@@ -370,7 +470,7 @@ class LiveScanWorker(QThread):
                         if rgb is None:
                             rgb = bgra[:, :, 2::-1].copy()
                         items = [{k: v for k, v in t.items() if k not in ('patch', 'misses')} for t in tracked]
-                        self.results_changed.emit(items, rgb)
+                        self._publish(items, rgb)
 
                     self._stop.wait(max(0.0, self.TICK_SECONDS - (time.monotonic() - started)))
         except Exception as e:
