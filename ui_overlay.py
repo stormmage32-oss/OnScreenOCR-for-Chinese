@@ -605,9 +605,22 @@ class LivePinyinOverlayWindow(PinyinOverlayWindow):
     is excluded from screen capture so the scanner never reads its own labels.
     """
     WDA_EXCLUDEFROMCAPTURE = 0x11
+    LABEL_HEADROOM = 40  # logical px above a selected region for its top line's pinyin
 
-    def __init__(self, screen_rect: QRect):
-        super().__init__([], screen_rect)
+    def __init__(self, capture_rect: QRect, region=False):
+        """capture_rect: the logical rect being scanned.
+
+        region: a user-selected area rather than a whole screen. Labels sit
+        above their characters, so the window then reaches up past the area
+        (within its screen) and outlines the area that is being scanned.
+        """
+        rect = QRect(capture_rect)
+        if region:
+            screen = QApplication.screenAt(capture_rect.center()) or QApplication.primaryScreen()
+            rect.setTop(max(screen.geometry().top(), capture_rect.top() - self.LABEL_HEADROOM))
+        super().__init__([], rect)
+        self._region = region
+        self._top_pad = capture_rect.top() - rect.top()
         self.setWindowFlag(Qt.WindowDoesNotAcceptFocus, True)
         self._topmost_timer = QTimer(self)
         self._topmost_timer.setInterval(2000)
@@ -616,7 +629,30 @@ class LivePinyinOverlayWindow(PinyinOverlayWindow):
 
     def set_results(self, results, image):
         self._set_data(results, image)
+        if self._top_pad:
+            # Results are relative to the scanned area, which starts below the window's top.
+            self.results = [self._shifted(r, self._top_pad) for r in self.results]
         self.update()
+
+    @staticmethod
+    def _shifted(res, dy):
+        r = dict(res)
+        r['bbox'] = dict(res['bbox'], y=res['bbox']['y'] + dy)
+        if 'text_top' in res:
+            r['text_top'] = res['text_top'] + dy
+        return r
+
+    def _adaptive_colors(self, rect: QRect):
+        # The frame only covers the scanned area.
+        return super()._adaptive_colors(rect.translated(0, -self._top_pad))
+
+    def paintEvent(self, event):
+        if self._region:
+            p = QPainter(self)
+            p.setPen(QPen(QColor(192, 139, 92, 200), 1, Qt.DashLine))
+            p.drawRect(QRect(0, self._top_pad, self.width() - 1, self.height() - self._top_pad - 1))
+            p.end()
+        super().paintEvent(event)
 
     def showEvent(self, event):
         super().showEvent(event)
