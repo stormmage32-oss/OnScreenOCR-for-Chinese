@@ -72,6 +72,9 @@ def main():
     app.setStyle('Fusion')
     app.setQuitOnLastWindowClosed(False)
     app.setFont(QFont("Segoe UI", 10))
+    from config import load_config
+    from theme import set_theme
+    set_theme(load_config().get("theme", "light"))  # before any window is built
     win = MainWindow()
     win.show()
     sys.exit(app.exec_())

@@ -1,10 +1,10 @@
 """Step-by-step guide to getting a free DeepL API key, in English or Turkish."""
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
-                             QAbstractButton)
-from PyQt5.QtCore import Qt, QUrl, QRectF, pyqtProperty, QPropertyAnimation, QEasingCurve, QLocale
-from PyQt5.QtGui import QPainter, QColor, QFont, QDesktopServices
+from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton
+from PyQt5.QtCore import Qt, QUrl, QLocale
+from PyQt5.QtGui import QDesktopServices
 
-from theme import BASE_QSS, BG, SURFACE, BORDER, TEXT, MUTED, ACCENT
+from theme import P, base_qss, style_title_bar
+from ui_components import SegmentedSlider
 
 SIGNUP_URL = "https://www.deepl.com/pro-api"
 KEYS_URL = "https://www.deepl.com/your-account/keys"
@@ -19,7 +19,7 @@ GUIDE = {
                 "month. You are never charged.",
         "steps": [
             ("Open the DeepL API page and choose the <b>DeepL API Free</b> plan, not Pro. "
-             "This app only works with Free keys.", ("Open DeepL API page", SIGNUP_URL)),
+             "Free is all this app needs.", ("Open DeepL API page", SIGNUP_URL)),
             ("Sign up with your email. The API needs its own account, separate from the "
              "DeepL translator website. DeepL may ask for a card to confirm who you are; "
              "the Free plan does not charge it.", None),
@@ -39,7 +39,7 @@ GUIDE = {
                 "Sizden hiçbir ücret alınmaz.",
         "steps": [
             ("DeepL API sayfasını açın ve Pro değil, <b>DeepL API Free</b> planını seçin. "
-             "Bu uygulama yalnızca Free anahtarlarla çalışır.", ("DeepL API sayfasını aç", SIGNUP_URL)),
+             "Bu uygulama için Free plan yeterli.", ("DeepL API sayfasını aç", SIGNUP_URL)),
             ("E-posta adresinizle kaydolun. API için DeepL çeviri sitesinden ayrı bir hesap "
              "gerekir. DeepL kimliğinizi doğrulamak için kart bilgisi isteyebilir; Free planda "
              "karttan para çekilmez.", None),
@@ -54,17 +54,19 @@ GUIDE = {
     },
 }
 
-QSS = BASE_QSS + f"""
-QDialog {{ background: {BG}; }}
+def guide_qss():
+    return base_qss() + f"""
+QDialog {{ background: {P.BG}; }}
 QLabel#guideTitle {{ font-size: 16px; font-weight: 600; }}
-QFrame#freeBox {{ background: #EAF5EA; border: 1px solid #BFE0BF; border-radius: 6px; }}
-QLabel#freeText {{ color: #1F4D1F; font-size: 12px; }}
-QFrame#stepCard {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 6px; }}
-QLabel#stepNum {{ background: {ACCENT}; color: #FFFFFF; border-radius: 11px;
+QFrame#freeBox {{ background: {P.SUCCESS_BG}; border: 1px solid {P.SUCCESS_BORDER}; border-radius: 6px; }}
+QLabel#freeText {{ color: {P.SUCCESS_TEXT}; font-size: 12px; }}
+QFrame#stepCard {{ background: {P.SURFACE}; border: 1px solid {P.BORDER}; border-radius: 6px; }}
+QLabel#stepNum {{ background: {P.ACCENT}; color: {P.ON_ACCENT}; border-radius: 11px;
                  font-size: 11px; font-weight: 600; }}
 QLabel#stepText {{ font-size: 12px; }}
-QLabel#note {{ color: {MUTED}; font-size: 11px; }}
+QLabel#note {{ color: {P.MUTED}; font-size: 11px; }}
 """
+
 
 # Remembered for the rest of the session once the user picks a language.
 _last_lang = None
@@ -76,63 +78,13 @@ def _default_lang():
     return "tr" if QLocale.system().language() == QLocale.Turkish else "en"
 
 
-class LangSlider(QAbstractButton):
-    """Two-position EN / TR slider. Checked means Turkish."""
-
-    def __init__(self, turkish=False, parent=None):
-        super().__init__(parent)
-        self.setCheckable(True)
-        self.setChecked(turkish)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setFixedSize(84, 28)
-        self.setToolTip("English / Türkçe")
-        self._offset = 1.0 if turkish else 0.0
-        self._anim = QPropertyAnimation(self, b"offset", self)
-        self._anim.setDuration(140)
-        self._anim.setEasingCurve(QEasingCurve.OutCubic)
-        self.toggled.connect(self._animate)
-
-    def _get_offset(self):
-        return self._offset
-
-    def _set_offset(self, v):
-        self._offset = v
-        self.update()
-
-    offset = pyqtProperty(float, _get_offset, _set_offset)
-
-    def _animate(self, on):
-        self._anim.stop()
-        self._anim.setStartValue(self._offset)
-        self._anim.setEndValue(1.0 if on else 0.0)
-        self._anim.start()
-
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        p.setPen(QColor(BORDER))
-        p.setBrush(QColor("#E6E6E6"))
-        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
-        half = (r.width() - 4) / 2
-        knob = QRectF(r.left() + 2 + half * self._offset, r.top() + 2, half, r.height() - 4)
-        p.setPen(QColor("#D0D0D0"))
-        p.setBrush(QColor(SURFACE))
-        p.drawRoundedRect(knob, knob.height() / 2, knob.height() / 2)
-        f = QFont("Segoe UI"); f.setPixelSize(11)
-        for i, text in enumerate(("EN", "TR")):
-            active = (i == 1) == self.isChecked()
-            f.setBold(active); p.setFont(f)
-            p.setPen(QColor(TEXT if active else MUTED))
-            p.drawText(QRectF(r.left() + 2 + half * i, r.top(), half, r.height()), Qt.AlignCenter, text)
-
-
 class DeepLGuideDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        self.setStyleSheet(QSS)
+        self.setStyleSheet(guide_qss())
+        style_title_bar(self)
         self.setFixedWidth(440)
 
         self._v = QVBoxLayout(self)
@@ -141,8 +93,9 @@ class DeepLGuideDialog(QDialog):
 
         head = QHBoxLayout(); head.setSpacing(12)
         self._title = QLabel(); self._title.setObjectName("guideTitle")
-        self._lang = LangSlider(_default_lang() == "tr")
-        self._lang.toggled.connect(self._on_lang)
+        self._lang = SegmentedSlider(("EN", "TR"), 1 if _default_lang() == "tr" else 0)
+        self._lang.setToolTip("English / Türkçe")
+        self._lang.index_changed.connect(self._on_lang)
         head.addWidget(self._title, 1); head.addWidget(self._lang, 0, Qt.AlignVCenter)
         self._v.addLayout(head)
         self._v.addSpacing(14)
@@ -159,7 +112,7 @@ class DeepLGuideDialog(QDialog):
         foot.addWidget(self._note, 1); foot.addWidget(self._close)
         self._v.addLayout(foot)
 
-        self._fill("tr" if self._lang.isChecked() else "en")
+        self._fill("tr" if self._lang.index() == 1 else "en")
 
     def _on_lang(self, turkish):
         global _last_lang

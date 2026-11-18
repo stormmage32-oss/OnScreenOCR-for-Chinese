@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QList
                              QStyledItemDelegate, QStyle, QShortcut, QMessageBox)
 from PyQt5.QtCore import Qt, QSize, QRect, QRectF, pyqtSignal
 from PyQt5.QtGui import QFont, QFontMetrics, QPainter, QColor, QKeySequence
-from theme import BASE_QSS, BG, SURFACE, BORDER, TEXT, MUTED, FAINT, ACCENT, CJK_FONT
+from theme import P, base_qss, style_title_bar, CJK_FONT
 from app_paths import install_dir_path, user_data_path
 
 logger = logging.getLogger("OCRApp")
@@ -96,19 +96,21 @@ ROLE_WORD = Qt.UserRole + 1
 ROLE_PINYIN = Qt.UserRole + 2
 ROLE_DATE = Qt.UserRole + 3
 
-NOTEBOOK_QSS = BASE_QSS + f"""
-QDialog {{ background: {BG}; }}
+def notebook_qss():
+    return base_qss() + f"""
+QDialog {{ background: {P.BG}; }}
 QLabel#title {{ font-size: 18px; font-weight: 600; }}
-QLabel#count {{ color: {MUTED}; font-size: 12px; }}
-QListWidget {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 6px; outline: none; padding: 4px; }}
-QFrame#detail {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 6px; }}
+QLabel#count {{ color: {P.MUTED}; font-size: 12px; }}
+QListWidget {{ background: {P.SURFACE}; border: 1px solid {P.BORDER}; border-radius: 6px; outline: none; padding: 4px; }}
+QFrame#detail {{ background: {P.SURFACE}; border: 1px solid {P.BORDER}; border-radius: 6px; }}
+QScrollArea#meaningScroll, QScrollArea#meaningScroll > QWidget > QWidget {{ background: {P.SURFACE}; }}
 QLabel#word {{ font-family: "{CJK_FONT}"; font-size: 40px; }}
-QLabel#pinyin {{ color: {ACCENT}; font-size: 17px; }}
-QLabel#fieldLabel {{ color: {MUTED}; font-size: 11px; font-weight: 600; }}
+QLabel#pinyin {{ color: {P.ACCENT_TEXT}; font-size: 17px; }}
+QLabel#fieldLabel {{ color: {P.MUTED}; font-size: 11px; font-weight: 600; }}
 QLabel#meaning {{ font-size: 13px; }}
-QLabel#meta {{ color: {FAINT}; font-size: 11px; }}
-QLabel#empty {{ color: {MUTED}; font-size: 13px; }}
-QFrame#divider {{ background: #EDEDED; border: none; max-height: 1px; min-height: 1px; }}
+QLabel#meta {{ color: {P.FAINT}; font-size: 11px; }}
+QLabel#empty {{ color: {P.MUTED}; font-size: 13px; }}
+QFrame#divider {{ background: {P.DIVIDER}; border: none; max-height: 1px; min-height: 1px; }}
 """
 
 
@@ -128,10 +130,10 @@ class WordItemDelegate(QStyledItemDelegate):
         hover = option.state & QStyle.State_MouseOver
         if selected or hover:
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor("#EAF2FB" if selected else "#F5F5F5"))
+            p.setBrush(QColor(P.ROW_SELECTED if selected else P.ROW_HOVER))
             p.drawRoundedRect(QRectF(r), 4, 4)
         if selected:
-            p.setBrush(QColor(ACCENT))
+            p.setBrush(QColor(P.ACCENT))
             p.drawRoundedRect(QRectF(r.left(), r.top() + 14, 3, r.height() - 28), 1.5, 1.5)
 
         left = r.left() + 14
@@ -143,18 +145,18 @@ class WordItemDelegate(QStyledItemDelegate):
 
         f_word = QFont(CJK_FONT); f_word.setPixelSize(16)
         fm = QFontMetrics(f_word)
-        p.setFont(f_word); p.setPen(QColor(TEXT))
+        p.setFont(f_word); p.setPen(QColor(P.TEXT))
         p.drawText(QRect(left, r.top() + 7, text_w, 22), Qt.AlignLeft | Qt.AlignVCenter,
                    fm.elidedText(index.data(ROLE_WORD) or "", Qt.ElideRight, text_w))
 
         f_py = QFont("Segoe UI"); f_py.setPixelSize(12)
         fm_py = QFontMetrics(f_py)
-        p.setFont(f_py); p.setPen(QColor(MUTED))
+        p.setFont(f_py); p.setPen(QColor(P.MUTED))
         p.drawText(QRect(left, r.top() + 29, text_w, 18), Qt.AlignLeft | Qt.AlignVCenter,
                    fm_py.elidedText(index.data(ROLE_PINYIN) or "", Qt.ElideRight, text_w))
 
         if date:
-            p.setFont(f_date); p.setPen(QColor(FAINT))
+            p.setFont(f_date); p.setPen(QColor(P.FAINT))
             p.drawText(QRect(r.right() - 14 - date_w, r.top() + 7, date_w, 22),
                        Qt.AlignRight | Qt.AlignVCenter, date)
         p.restore()
@@ -180,10 +182,19 @@ class WordNotebookWindow(QDialog):
                             | Qt.WindowMinMaxButtonsHint)
         self.resize(820, 540)
         self.setMinimumSize(640, 420)
-        self.setStyleSheet(NOTEBOOK_QSS)
         self.words_data = []
+        self._current = None
         self._init_ui()
+        self.apply_theme()
         self.load_words()
+
+    def apply_theme(self):
+        """(Re)style for the current theme; also called when the theme changes."""
+        self.setStyleSheet(notebook_qss())
+        style_title_bar(self)
+        self.list_widget.viewport().update()
+        if self._current is not None:
+            self._show_word(self._current)
 
     def _init_ui(self):
         root = QVBoxLayout(self)
@@ -253,7 +264,7 @@ class WordNotebookWindow(QDialog):
         self.lbl_meaning.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.lbl_meaning.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setStyleSheet(f"QScrollArea, QScrollArea > QWidget > QWidget {{ background: {SURFACE}; }}")
+        scroll.setObjectName("meaningScroll")
         scroll.setWidget(self.lbl_meaning)
         rl.addWidget(scroll, 1)
         rl.addSpacing(8)
@@ -320,6 +331,7 @@ class WordNotebookWindow(QDialog):
 
     def _show_word(self, w):
         has = w is not None
+        self._current = w
         self.right_frame.setVisible(has)
         if not has:
             return
@@ -328,12 +340,12 @@ class WordNotebookWindow(QDialog):
         meanings = _split_meanings(w.get('meanings', ''))
         if meanings:
             rows = "".join(
-                f"<tr><td style='color:{FAINT};padding:0 10px 6px 0;'>{n}</td>"
+                f"<tr><td style='color:{P.FAINT};padding:0 10px 6px 0;'>{n}</td>"
                 f"<td style='padding-bottom:6px;'>{html.escape(m)}</td></tr>"
                 for n, m in enumerate(meanings, 1))
             self.lbl_meaning.setText(f"<table cellspacing='0'>{rows}</table>")
         else:
-            self.lbl_meaning.setText(f"<span style='color:{FAINT};'>No meaning saved.</span>")
+            self.lbl_meaning.setText(f"<span style='color:{P.FAINT};'>No meaning saved.</span>")
         ts = w.get('timestamp', '')
         self.lbl_meta.setText(f"Saved {ts}" if ts else "")
 

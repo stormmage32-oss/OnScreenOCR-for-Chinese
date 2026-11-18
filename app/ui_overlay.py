@@ -13,7 +13,7 @@ from dictionary import lookup_hsk, HSK_COLORS, get_pinyin, get_char_weight
 from word_notebook import save_word
 from ui_components import HoverTooltip, DetailPopup, _clamp_popup, matches_save_key, save_entry
 from screens import scale_results
-from theme import BASE_QSS, BG, SURFACE, BORDER, TEXT, MUTED
+from theme import P, base_qss, qcolor, style_title_bar
 
 logger = logging.getLogger("OCRApp")
 
@@ -76,13 +76,13 @@ class _ScreenSelector(QWidget):
         self.setGeometry(self.screen_geometry)
         self.setCursor(Qt.CrossCursor)
         self.setWindowOpacity(0.35)
-        self.setStyleSheet("background:#D4C5B0;")
+        self.setStyleSheet(f"background:{P.SELECT_DIM};")
         self.origin = QPoint()
         self.rubber = QRubberBand(QRubberBand.Rectangle, self)
         self.selecting = False
 
         self.lbl = QLabel("  Drag: Select region  |  Double click: Full screen  |  ESC: Cancel  ", self)
-        self.lbl.setStyleSheet("color:#4A3F35;background:rgba(250,244,235,220);padding:8px 16px;"
+        self.lbl.setStyleSheet(f"color:{P.SELECT_LABEL_TEXT};background:{P.SELECT_LABEL_BG};padding:8px 16px;"
                           "border-radius:6px;font-size:14px;font-weight:bold;")
         self.lbl.adjustSize(); self.lbl.move(20, 20)
 
@@ -213,13 +213,16 @@ class OCRCanvas(QLabel):
                 if ly < 0: ly = y + h + 4
                 lx = x
                 if lx + tw > self.width(): lx = self.width() - tw - 4
-                p.setBrush(QBrush(QColor(255, 255, 255, 240))); p.setPen(QPen(QColor(BORDER), 1))
+                card = QColor(P.SURFACE); card.setAlpha(240)
+                p.setBrush(QBrush(card)); p.setPen(QPen(QColor(P.BORDER_HOVER), 1))
                 p.drawRoundedRect(lx, ly, tw, th, 4, 4)
-                p.setPen(QColor(TEXT)); p.drawText(lx+6, ly+th-6, txt)
+                p.setPen(QColor(P.TEXT)); p.drawText(lx+6, ly+th-6, txt)
                 
         if self.is_dragging and self.drag_rect.isValid():
-            p.setBrush(QBrush(QColor(15, 108, 189, 40)))
-            p.setPen(QPen(QColor(15, 108, 189, 200), 1))
+            fill, edge = QColor(P.ACCENT), QColor(P.ACCENT)
+            fill.setAlpha(40); edge.setAlpha(200)
+            p.setBrush(QBrush(fill))
+            p.setPen(QPen(edge, 1))
             p.drawRect(self.drag_rect)
             
         p.end(); self.setPixmap(pm)
@@ -392,14 +395,14 @@ class ScanBadge(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(20, 20, 20, 215))
+        p.setBrush(qcolor(P.CHIP_BG))
         p.drawRoundedRect(QRectF(self.rect()), 6, 6)
         key = QRectF(10, 6, self._key_w, self.height() - 12)
-        p.setBrush(QColor(255, 255, 255, 235))
+        p.setBrush(QColor(P.CHIP_KEY_BG))
         p.drawRoundedRect(key, 4, 4)
-        p.setFont(self._key_font); p.setPen(QColor(20, 20, 20))
+        p.setFont(self._key_font); p.setPen(QColor(P.CHIP_KEY_TEXT))
         p.drawText(key, Qt.AlignCenter, "Esc")
-        p.setFont(self._font); p.setPen(QColor("#FFFFFF"))
+        p.setFont(self._font); p.setPen(QColor(P.CHIP_TEXT))
         p.drawText(self.rect().adjusted(int(key.right()) + 8, 0, 0, 0),
                    Qt.AlignVCenter | Qt.AlignLeft, self.TEXT)
 
@@ -422,9 +425,6 @@ class OverlayWindow(QMainWindow):
         else:
             flags |= Qt.Window
         self.setWindowFlags(flags)
-        self.setStyleSheet(BASE_QSS + f"QMainWindow{{background:{BG};}}"
-                           f"QFrame#controlBar{{background:{SURFACE};border:none;border-bottom:1px solid {BORDER};}}"
-                           f"QLabel#barInfo{{color:{MUTED};font-size:12px;}}")
         h, w = image.shape[:2]
         if screen_rect:
             self.setGeometry(screen_rect)
@@ -436,6 +436,7 @@ class OverlayWindow(QMainWindow):
         self._build(image, results)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self._badge = None
+        self.apply_theme()
         if self.seamless:
             self._badge = ScanBadge(self)
             self._badge.raise_()
@@ -466,13 +467,12 @@ class OverlayWindow(QMainWindow):
         ns.clicked.connect(self._yeni_tarama); bl.addWidget(ns)
         
         vb.addWidget(bar)
-        sc = QScrollArea(); sc.setStyleSheet(f"QScrollArea{{background:{BG};border:none;}}"); sc.setWidgetResizable(True)
+        sc = QScrollArea(); sc.setObjectName("resultScroll"); sc.setWidgetResizable(True)
         if self.seamless:
             sc.setFrameShape(QFrame.NoFrame)
             sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             sc.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         inner = QWidget(); inner.setObjectName("inner")
-        inner.setStyleSheet(f"QWidget#inner{{background:{BG};}}")
         il = QVBoxLayout(inner); il.setAlignment(Qt.AlignCenter)
         if self.seamless:
             il.setContentsMargins(0, 0, 0, 0)
@@ -484,6 +484,21 @@ class OverlayWindow(QMainWindow):
             # The canvas consumes mouse moves, so observe it as well as the window.
             self.canvas.installEventFilter(self)
             sc.viewport().installEventFilter(self)
+
+    def apply_theme(self):
+        """(Re)style for the current theme; also called when the theme changes."""
+        self.setStyleSheet(base_qss() + f"""
+QMainWindow {{ background: {P.BG}; }}
+QFrame#controlBar {{ background: {P.SURFACE}; border: none; border-bottom: 1px solid {P.BORDER}; }}
+QLabel#barInfo {{ color: {P.MUTED}; font-size: 12px; }}
+QScrollArea#resultScroll {{ background: {P.BG}; border: none; }}
+QWidget#inner {{ background: {P.BG}; }}
+""")
+        if not self.seamless:
+            style_title_bar(self)
+        self.canvas._repaint()
+        if self._badge is not None:
+            self._badge.update()
 
     def _set_controls_visible(self, visible):
         self.control_bar.setVisible(visible)

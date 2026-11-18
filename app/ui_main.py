@@ -3,7 +3,7 @@ import logging
 from PyQt5 import sip
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea,
                              QFrame, QLabel, QPushButton, QLineEdit, QDialog, QAbstractButton,
-                             QButtonGroup, QStackedWidget, QSizePolicy,
+                             QButtonGroup, QStackedWidget, QSizePolicy, QComboBox,
                              QMessageBox, QSystemTrayIcon, QMenu, QAction, QApplication)
 from PyQt5.QtCore import (Qt, QObject, pyqtSignal, pyqtProperty, QThread, QTimer, QRect, QRectF,
                           QPropertyAnimation, QEasingCurve)
@@ -14,10 +14,11 @@ from ocr_engine import init_ocr, take_screenshot, OCRWorker, LiveScanWorker
 from dictionary import segment_ocr_results
 from ui_overlay import RegionSelector, OverlayWindow, PinyinOverlayWindow, LivePinyinOverlayWindow
 from word_notebook import WordNotebookWindow, migrate_and_load_saved_words
-from theme import (BASE_QSS, BG, SURFACE, BORDER, BORDER_HOVER, TEXT, MUTED, FAINT, ACCENT,
-                   ACCENT_HOVER, ACCENT_PRESSED, DANGER, SUCCESS, app_icon_pixmap)
+from theme import P, THEME_NAMES, base_qss, qcolor, set_theme, style_title_bar, app_icon_pixmap
 from screens import to_physical
 from deepl_guide import DeepLGuideDialog
+from translation import TARGET_LANGUAGES, UsageWorker
+from ui_components import SegmentedSlider
 
 logger = logging.getLogger("OCRApp")
 
@@ -42,63 +43,70 @@ class HotkeyListener(QObject):
 # Look & feel
 # ---------------------------------------------------------------------------
 
-QSS = BASE_QSS + f"""
-QMainWindow, QWidget#page {{ background: {BG}; }}
-QScrollArea, QWidget#qt_scrollarea_viewport {{ background: {BG}; border: none; }}
+def main_qss():
+    return base_qss() + f"""
+QMainWindow, QWidget#page {{ background: {P.BG}; }}
+QScrollArea, QWidget#qt_scrollarea_viewport {{ background: {P.BG}; border: none; }}
 
 QLabel#appTitle {{ font-size: 18px; font-weight: 600; }}
-QLabel#section {{ color: {MUTED}; font-size: 12px; font-weight: 600; }}
-QLabel#caption {{ color: {MUTED}; font-size: 11px; }}
+QLabel#section {{ color: {P.MUTED}; font-size: 12px; font-weight: 600; }}
+QLabel#caption {{ color: {P.MUTED}; font-size: 11px; }}
 
 QPushButton#tab {{ background: transparent; border: none; border-bottom: 2px solid transparent;
-                  color: {MUTED}; font-size: 13px; padding: 6px 2px; margin-right: 18px; }}
-QPushButton#tab:hover {{ color: {TEXT}; }}
-QPushButton#tab:checked {{ color: {TEXT}; border-bottom: 2px solid {ACCENT}; }}
-QFrame#tabLine {{ background: {BORDER}; border: none; max-height: 1px; min-height: 1px; }}
+                  color: {P.MUTED}; font-size: 13px; padding: 6px 2px; margin-right: 18px; }}
+QPushButton#tab:hover {{ color: {P.TEXT}; }}
+QPushButton#tab:checked {{ color: {P.TEXT}; border-bottom: 2px solid {P.ACCENT}; }}
+QFrame#tabLine {{ background: {P.BORDER}; border: none; max-height: 1px; min-height: 1px; }}
 
-QPushButton#card {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 6px; }}
-QPushButton#card:hover {{ background: #FAFAFA; border-color: {BORDER_HOVER}; }}
-QPushButton#card:pressed {{ background: #F2F2F2; }}
-QPushButton#card:disabled {{ background: #FAFAFA; border-color: #EAEAEA; }}
-QPushButton#cardPrimary {{ background: {ACCENT}; border: 1px solid {ACCENT}; border-radius: 6px; }}
-QPushButton#cardPrimary:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}
-QPushButton#cardPrimary:pressed {{ background: {ACCENT_PRESSED}; }}
-QPushButton#cardPrimary:disabled {{ background: #DCDCDC; border-color: #DCDCDC; }}
-QPushButton#cardActive {{ background: #FDF3F2; border: 1px solid #E8B4AE; border-radius: 6px; }}
-QPushButton#cardActive:hover {{ border-color: {DANGER}; }}
+QPushButton#card {{ background: {P.SURFACE}; border: 1px solid {P.BORDER}; border-radius: 6px; }}
+QPushButton#card:hover {{ background: {P.SURFACE_HOVER}; border-color: {P.BORDER_HOVER}; }}
+QPushButton#card:pressed {{ background: {P.SURFACE_PRESSED}; }}
+QPushButton#card:disabled {{ background: {P.DISABLED_BG}; border-color: {P.DIVIDER}; }}
+QPushButton#cardPrimary {{ background: {P.ACCENT}; border: 1px solid {P.ACCENT}; border-radius: 6px; }}
+QPushButton#cardPrimary:hover {{ background: {P.ACCENT_HOVER}; border-color: {P.ACCENT_HOVER}; }}
+QPushButton#cardPrimary:pressed {{ background: {P.ACCENT_PRESSED}; }}
+QPushButton#cardPrimary:disabled {{ background: {P.DISABLED_FILL}; border-color: {P.DISABLED_FILL}; }}
+QPushButton#cardActive {{ background: {P.ACTIVE_BG}; border: 1px solid {P.ACTIVE_BORDER}; border-radius: 6px; }}
+QPushButton#cardActive:hover {{ border-color: {P.DANGER}; }}
 
 QLabel#cardTitle {{ font-size: 13px; font-weight: 600; }}
-QLabel#cardTitle:disabled {{ color: {FAINT}; }}
-QLabel#cardKey {{ color: {MUTED}; font-size: 12px; }}
-QLabel#cardKey:disabled {{ color: {FAINT}; }}
-QPushButton#cardPrimary QLabel#cardTitle {{ color: #FFFFFF; }}
-QPushButton#cardPrimary QLabel#cardKey {{ color: #CFE4F7; }}
+QLabel#cardTitle:disabled {{ color: {P.FAINT}; }}
+QLabel#cardKey {{ color: {P.MUTED}; font-size: 12px; }}
+QLabel#cardKey:disabled {{ color: {P.FAINT}; }}
+QPushButton#cardPrimary QLabel#cardTitle {{ color: {P.ON_ACCENT}; }}
+QPushButton#cardPrimary QLabel#cardKey {{ color: {P.ON_ACCENT_MUTED}; }}
 QPushButton#cardPrimary QLabel#cardTitle:disabled,
-QPushButton#cardPrimary QLabel#cardKey:disabled {{ color: #F5F5F5; }}
-QPushButton#cardActive QLabel#cardTitle {{ color: {DANGER}; }}
+QPushButton#cardPrimary QLabel#cardKey:disabled {{ color: {P.FAINT}; }}
+QPushButton#cardActive QLabel#cardTitle {{ color: {P.DANGER}; }}
 
-QFrame#group {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 6px; }}
-QFrame#divider {{ background: #EDEDED; border: none; max-height: 1px; min-height: 1px; }}
+QFrame#group {{ background: {P.SURFACE}; border: 1px solid {P.BORDER}; border-radius: 6px; }}
+QFrame#divider {{ background: {P.DIVIDER}; border: none; max-height: 1px; min-height: 1px; }}
 QLabel#rowTitle {{ font-size: 13px; }}
-QLabel#rowSub {{ color: {MUTED}; font-size: 11px; }}
+QLabel#rowTitle:disabled {{ color: {P.FAINT}; }}
+QLabel#rowSub {{ color: {P.MUTED}; font-size: 11px; }}
+QLabel#keyStatus {{ color: {P.MUTED}; font-size: 11px; }}
+QLabel#keyStatus[state="ok"] {{ color: {P.SUCCESS}; }}
+QLabel#keyStatus[state="error"] {{ color: {P.DANGER}; }}
 
-QPushButton#keycap {{ background: {SURFACE}; border: 1px solid {BORDER}; border-bottom-color: #CFCFCF;
-                     border-radius: 4px; color: {TEXT}; font-size: 12px; padding: 5px 12px; min-width: 90px; }}
-QPushButton#keycap:hover {{ background: #F9F9F9; border-color: {BORDER_HOVER}; }}
-QPushButton#keycap[empty="true"] {{ color: {FAINT}; }}
+QPushButton#keycap {{ background: {P.SURFACE}; border: 1px solid {P.BORDER}; border-bottom-color: {P.BORDER_BOTTOM};
+                     border-radius: 4px; color: {P.TEXT}; font-size: 12px; padding: 5px 12px; min-width: 90px; }}
+QPushButton#keycap:hover {{ background: {P.SURFACE_HOVER}; border-color: {P.BORDER_HOVER}; }}
+QPushButton#keycap[empty="true"] {{ color: {P.FAINT}; }}
 
-QFrame#statusBar {{ background: {SURFACE}; border: none; border-top: 1px solid {BORDER}; }}
-QLabel#statusText {{ color: {MUTED}; font-size: 11px; }}
-QLabel#statusText[state="ready"] {{ color: {SUCCESS}; }}
-QLabel#statusText[state="error"] {{ color: {DANGER}; }}
+QFrame#statusBar {{ background: {P.SURFACE}; border: none; border-top: 1px solid {P.BORDER}; }}
+QLabel#statusText {{ color: {P.MUTED}; font-size: 11px; }}
+QLabel#statusText[state="ready"] {{ color: {P.SUCCESS}; }}
+QLabel#statusText[state="error"] {{ color: {P.DANGER}; }}
 
-QPushButton#link {{ background: transparent; border: none; color: {ACCENT}; font-size: 12px;
+QPushButton#link {{ background: transparent; border: none; color: {P.ACCENT_TEXT}; font-size: 12px;
                    padding: 2px 0; text-align: left; }}
-QPushButton#link:hover {{ color: {ACCENT_HOVER}; text-decoration: underline; }}
+QPushButton#link:hover {{ color: {P.ACCENT_HOVER}; text-decoration: underline; }}
+QPushButton#link:disabled {{ color: {P.FAINT}; }}
 
-QFrame#dlg {{ background: {SURFACE}; border: 1px solid {BORDER_HOVER}; border-radius: 8px; }}
+QFrame#dlg {{ background: {P.SURFACE}; border: 1px solid {P.BORDER_HOVER}; border-radius: 8px; }}
 QLabel#dlgTitle {{ font-size: 14px; font-weight: 600; }}
 """
+
 
 # config key, display name, default, listener attribute
 HOTKEYS = (
@@ -174,15 +182,15 @@ class ToggleSwitch(QAbstractButton):
         on = self.isChecked()
         if on:
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(ACCENT if self.isEnabled() else "#C8C8C8"))
+            p.setBrush(QColor(P.ACCENT if self.isEnabled() else P.DISABLED_FILL))
         else:
-            p.setPen(QColor("#8A8A8A" if self.isEnabled() else "#C8C8C8"))
-            p.setBrush(QColor(SURFACE))
+            p.setPen(QColor(P.TOGGLE_OFF if self.isEnabled() else P.DISABLED_FILL))
+            p.setBrush(QColor(P.SURFACE))
         p.drawRoundedRect(r, rad, rad)
         d = 12
         x = 4 + (r.width() - d - 8) * self._offset
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#FFFFFF") if on else QColor("#5F5F5F"))
+        p.setBrush(QColor(P.ON_ACCENT) if on else QColor(P.KNOB_OFF if self.isEnabled() else P.DISABLED_FILL))
         p.drawEllipse(QRectF(x + 0.5, (self.height() - d) / 2, d, d))
 
 
@@ -249,9 +257,9 @@ class LoadingIndicator(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(20, 20, 20, 225))
+        p.setBrush(qcolor(P.CHIP_BG))
         p.drawRoundedRect(QRectF(self.rect()), 6, 6)
-        p.setPen(QColor("#FFFFFF"))
+        p.setPen(QColor(P.CHIP_TEXT))
         # Left-aligned with a fixed width, so the box doesn't jump as the dots change.
         p.drawText(self.rect().adjusted(16, 0, 0, 0), Qt.AlignVCenter | Qt.AlignLeft,
                    "Loading" + "." * self._dots)
@@ -263,7 +271,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Chinese Screen OCR")
         self.setWindowIcon(QIcon(app_icon_pixmap(64)))
         self._fit_to_screen()
-        self.setStyleSheet(QSS)
+        self.setStyleSheet(main_qss())
         self.ocr_ready = False; self.overlay = None; self.pinyin_overlay = None; self._worker = None
         self._active_screen_rect = None; self._ocr_mode = "normal"; self.seamless_overlay = None
         self.live_overlay = None; self._live_worker = None; self._capture_scale = 1.0
@@ -271,9 +279,14 @@ class MainWindow(QMainWindow):
         self._live_sel = None; self._live_restore_window = False
         self.config = load_config()
         self._keycaps = {}
+        self._usage_worker = None
+        self._usage_checked_key = None
+        self._usage_timer = QTimer(self); self._usage_timer.setSingleShot(True); self._usage_timer.setInterval(900)
+        self._usage_timer.timeout.connect(self._check_key)
         self._build(); self._start_init()
         self._setup_hotkey()
         self._setup_tray()
+        style_title_bar(self)
 
     def _fit_to_screen(self):
         # At high display scaling the logical screen can be shorter than the
@@ -301,7 +314,7 @@ class MainWindow(QMainWindow):
             self._nav.addButton(b, i); tabs.addWidget(b)
         tabs.addStretch()
         self._nav.button(0).setChecked(True)
-        self._nav.buttonClicked[int].connect(self._pages.setCurrentIndex)
+        self._nav.buttonClicked[int].connect(self._on_tab)
         hv.addLayout(tabs)
         rv.addWidget(header)
         line = QFrame(); line.setObjectName("tabLine")
@@ -396,14 +409,35 @@ class MainWindow(QMainWindow):
         btn_eye.clicked.connect(lambda: self._toggle_key_visible(btn_eye))
         key_box.addWidget(self.le_deepl_key, 1); key_box.addWidget(btn_eye)
         gl.addLayout(key_box)
-        guide_row = QHBoxLayout(); guide_row.setContentsMargins(16, 0, 16, 10)
+        guide_row = QHBoxLayout(); guide_row.setContentsMargins(16, 0, 16, 0); guide_row.setSpacing(8)
         # Stays clickable while DeepL is off: you need the key before turning it on.
         btn_guide = QPushButton("How to get a free key"); btn_guide.setObjectName("link")
         btn_guide.setCursor(Qt.PointingHandCursor)
         btn_guide.setToolTip("Step-by-step guide, in English or Turkish")
         btn_guide.clicked.connect(self._open_deepl_guide)
-        guide_row.addWidget(btn_guide); guide_row.addStretch()
+        self.btn_check_key = QPushButton("Check key"); self.btn_check_key.setObjectName("link")
+        self.btn_check_key.setCursor(Qt.PointingHandCursor)
+        self.btn_check_key.setToolTip("Test the key and show how much of this month's quota is left")
+        self.btn_check_key.clicked.connect(lambda: self._check_key(force=True))
+        guide_row.addWidget(btn_guide); guide_row.addStretch(); guide_row.addWidget(self.btn_check_key)
         gl.addLayout(guide_row)
+        status_row = QHBoxLayout(); status_row.setContentsMargins(16, 2, 16, 12)
+        self.lbl_key_status = _label("", "keyStatus", wrap=True)
+        status_row.addWidget(self.lbl_key_status)
+        gl.addLayout(status_row)
+        self.le_deepl_key.textChanged.connect(self._on_key_edited)
+        gl.addWidget(self._divider())
+        self.cmb_target = QComboBox()
+        self.cmb_target.setCursor(Qt.PointingHandCursor)
+        self.cmb_target.setMinimumWidth(170)
+        current = self.config.get('deepl_target_lang', 'EN-US')
+        for code, name in TARGET_LANGUAGES:
+            self.cmb_target.addItem(name, code)
+        idx = self.cmb_target.findData(current)
+        self.cmb_target.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cmb_target.currentIndexChanged.connect(self._save_target_lang)
+        gl.addLayout(self._setting_row("Translate into", "Language DeepL translates to",
+                                       self.cmb_target))
         gl.addWidget(self._divider())
         self.cb_deepl_always = ToggleSwitch(self.config.get('deepl_always', False))
         self.cb_deepl_always.toggled.connect(self._save_deepl_always)
@@ -414,8 +448,16 @@ class MainWindow(QMainWindow):
         v.addWidget(grp)
 
         v.addSpacing(20)
-        v.addWidget(_label("Window", "section")); v.addSpacing(8)
+        v.addWidget(_label("Appearance", "section")); v.addSpacing(8)
         grp_w, glw = self._group()
+        names = [n for n, _ in THEME_NAMES]
+        theme = self.config.get('theme', 'light')
+        self.theme_slider = SegmentedSlider([label for _, label in THEME_NAMES],
+                                            names.index(theme) if theme in names else 0, segment_w=58)
+        self.theme_slider.index_changed.connect(lambda i: self._apply_theme(names[i]))
+        glw.addLayout(self._setting_row("Theme", "Colors of every window and popup",
+                                        self.theme_slider))
+        glw.addWidget(self._divider())
         self.cb_stay_tray = ToggleSwitch(self.config.get('stay_in_tray_after_scan', False))
         self.cb_stay_tray.toggled.connect(self._save_stay_in_tray)
         glw.addLayout(self._setting_row("Stay in tray after a scan",
@@ -498,8 +540,79 @@ class MainWindow(QMainWindow):
         dlg.exec_()
 
     def _update_deepl_key_enabled(self):
-        self.le_deepl_key.setEnabled(self.cb_deepl.isChecked())
-        self.cb_deepl_always.setEnabled(self.cb_deepl.isChecked())
+        on = self.cb_deepl.isChecked()
+        self.le_deepl_key.setEnabled(on)
+        self.cb_deepl_always.setEnabled(on)
+        self.cmb_target.setEnabled(on)
+        self.btn_check_key.setEnabled(on and bool(self.le_deepl_key.text().strip()))
+        self.lbl_key_status.setVisible(on and bool(self.lbl_key_status.text()))
+
+    def _save_target_lang(self, _):
+        self.config['deepl_target_lang'] = self.cmb_target.currentData() or 'EN-US'
+        save_config(self.config)
+
+    def _on_tab(self, i):
+        self._pages.setCurrentIndex(i)
+        if i == 1:
+            self._check_key()  # only re-checks if the key changed
+
+    def _on_key_edited(self, _):
+        self._usage_checked_key = None
+        self._set_key_status("", "")
+        self._update_deepl_key_enabled()
+        self._usage_timer.start()  # check once typing/pasting has stopped
+
+    def _set_key_status(self, state, text):
+        self.lbl_key_status.setText(text)
+        self.lbl_key_status.setProperty("state", state)
+        _repolish(self.lbl_key_status)
+        self.lbl_key_status.setVisible(bool(text) and self.cb_deepl.isChecked())
+
+    def _check_key(self, force=False):
+        key = self.le_deepl_key.text().strip()
+        if not key or not self.cb_deepl.isChecked():
+            return
+        if self._usage_worker is not None or (key == self._usage_checked_key and not force):
+            return
+        self._usage_checked_key = key
+        self._set_key_status("", "Checking key…")
+        self.btn_check_key.setEnabled(False)
+        w = self._usage_worker = UsageWorker(key)
+
+        def done(ok, used, limit, message):
+            self._usage_worker = None
+            self.btn_check_key.setEnabled(bool(self.le_deepl_key.text().strip()))
+            if self.le_deepl_key.text().strip() != key:
+                return  # the key was edited meanwhile; that edit schedules its own check
+            if not ok:
+                self._usage_checked_key = None
+                self._set_key_status("error", message)
+                return
+            if limit:
+                left = max(0, limit - used)
+                pct = used * 100 / limit
+                text = (f"Key works. {used:,} of {limit:,} characters used this month "
+                        f"({pct:.0f}%), {left:,} left.")
+                self._set_key_status("error" if left == 0 else "ok", text)
+            else:
+                self._set_key_status("ok", f"Key works. {used:,} characters used this month.")
+
+        w.done.connect(done)
+        w.start()
+
+    def _apply_theme(self, name):
+        self.config['theme'] = name
+        save_config(self.config)
+        set_theme(name)
+        self.setStyleSheet(main_qss())
+        style_title_bar(self)
+        for w in self.findChildren(QWidget):
+            w.update()
+        if self.notebook is not None and not sip.isdeleted(self.notebook):
+            self.notebook.apply_theme()
+        for ov in (self.overlay, self.seamless_overlay):
+            if ov is not None and not sip.isdeleted(ov):
+                ov.apply_theme()
 
     def _save_manga_mode(self, state):
         self.config['manga_mode'] = bool(state)
@@ -919,14 +1032,7 @@ class MainWindow(QMainWindow):
         self.tray_icon.setIcon(QIcon(app_icon_pixmap(32)))
         self.tray_icon.setToolTip("Chinese Screen OCR")
 
-        menu = QMenu()
-        menu.setStyleSheet(
-            f"QMenu {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER_HOVER}; "
-            "font-size: 12px; padding: 4px; }"
-            "QMenu::item { padding: 6px 18px; border-radius: 4px; }"
-            "QMenu::item:selected { background: #EDEDED; }"
-            f"QMenu::separator {{ height: 1px; background: {BORDER}; margin: 4px 6px; }}"
-        )
+        menu = QMenu()  # styled by the application-wide theme stylesheet
         act_show = QAction("Show Main Window", self)
         act_show.triggered.connect(self.show_and_raise)
         menu.addAction(act_show)

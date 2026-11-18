@@ -1,15 +1,16 @@
 import html
 
 from PyQt5.QtWidgets import (QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QApplication,
-                             QPushButton, QGraphicsOpacityEffect)
-from PyQt5.QtCore import Qt, QPoint, QPropertyAnimation
-from PyQt5.QtGui import QKeySequence
+                             QPushButton, QGraphicsOpacityEffect, QAbstractButton)
+from PyQt5.QtCore import (Qt, QPoint, QRectF, QPropertyAnimation, QEasingCurve, pyqtProperty,
+                          pyqtSignal)
+from PyQt5.QtGui import QKeySequence, QPainter, QColor, QFont
 
 from dictionary import lookup_word, get_pinyin, get_derived_hsk_level, HSK_COLORS, lookup_cedict
 from translation import TranslationWorker
 from word_notebook import save_word
 from config import load_config
-from theme import BASE_QSS, SURFACE, BORDER_HOVER, TEXT, MUTED, FAINT, ACCENT, SUCCESS, DANGER, CJK_FONT
+from theme import P, base_qss, hsk_color, CJK_FONT
 
 POS_MAP = {'n': 'noun', 'v': 'verb', 'a': 'adj', 'ad': 'adv', 'nr': 'proper noun',
            'vn': 'verb/noun', 'an': 'adj/noun', 'l': 'idiom', 'e': 'interj',
@@ -17,28 +18,32 @@ POS_MAP = {'n': 'noun', 'v': 'verb', 'a': 'adj', 'ad': 'adv', 'nr': 'proper noun
            'mq': 'number', 'd': 'adv', 'p': 'prep', 'c': 'conj', 'm': 'number',
            'q': 'measure', 't': 'time', 'f': 'place', 's': 'place', 'u': 'aux'}
 
-POPUP_QSS = BASE_QSS + f"""
-QFrame#card {{ background: {SURFACE}; border: 1px solid {BORDER_HOVER}; border-radius: 8px; }}
+def popup_qss():
+    return base_qss() + f"""
+QFrame#card {{ background: {P.SURFACE}; border: 1px solid {P.BORDER_HOVER}; border-radius: 8px; }}
 QLabel#tag {{ font-size: 11px; font-weight: 600; }}
 QLabel#word {{ font-family: "{CJK_FONT}"; font-size: 32px; }}
-QLabel#pinyin {{ color: {ACCENT}; font-size: 16px; }}
+QLabel#pinyin {{ color: {P.ACCENT_TEXT}; font-size: 16px; }}
 QLabel#meaning {{ font-size: 17px; }}
-QLabel#muted {{ color: {MUTED}; font-size: 13px; }}
-QLabel#sentence {{ color: {MUTED}; font-family: "{CJK_FONT}"; font-size: 12px; }}
+QLabel#muted {{ color: {P.MUTED}; font-size: 13px; }}
+QLabel#error {{ color: {P.DANGER}; font-size: 13px; }}
+QLabel#sentence {{ color: {P.MUTED}; font-family: "{CJK_FONT}"; font-size: 12px; }}
 QLabel#translation {{ font-size: 15px; }}
-QLabel#meta {{ color: {FAINT}; font-size: 11px; }}
-QFrame#divider {{ background: #EDEDED; border: none; max-height: 1px; min-height: 1px; }}
+QLabel#meta {{ color: {P.FAINT}; font-size: 11px; }}
+QFrame#divider {{ background: {P.DIVIDER}; border: none; max-height: 1px; min-height: 1px; }}
 """
 
-HOVER_QSS = f"""
-QFrame#hoverCard {{ background: {SURFACE}; border: 1px solid {BORDER_HOVER}; border-radius: 6px; }}
+
+def hover_qss():
+    return f"""
+QFrame#hoverCard {{ background: {P.SURFACE}; border: 1px solid {P.BORDER_HOVER}; border-radius: 6px; }}
 QLabel {{ background: transparent; }}
-QLabel#hWord {{ color: {TEXT}; font-family: "{CJK_FONT}"; font-size: 20px; }}
-QLabel#hPinyin {{ color: {ACCENT}; font-size: 14px; }}
-QLabel#hMeaning {{ color: {TEXT}; font-size: 15px; }}
-QLabel#hHint {{ color: {FAINT}; font-size: 11px; }}
-QLabel#hHint[state="saved"] {{ color: {SUCCESS}; font-weight: 600; }}
-QLabel#hHint[state="dup"] {{ color: {MUTED}; font-weight: 600; }}
+QLabel#hWord {{ color: {P.TEXT}; font-family: "{CJK_FONT}"; font-size: 20px; }}
+QLabel#hPinyin {{ color: {P.ACCENT_TEXT}; font-size: 14px; }}
+QLabel#hMeaning {{ color: {P.TEXT}; font-size: 15px; }}
+QLabel#hHint {{ color: {P.FAINT}; font-size: 11px; }}
+QLabel#hHint[state="saved"] {{ color: {P.SUCCESS}; font-weight: 600; }}
+QLabel#hHint[state="dup"] {{ color: {P.MUTED}; font-weight: 600; }}
 """
 
 
@@ -120,7 +125,7 @@ def _hsk_tag(text):
     name = "HSK 7-9" if level == 7 else f"HSK {level}"
     if derived and len(text) > 1:
         name += " (by character)"
-    return name, HSK_COLORS.get(level, MUTED)
+    return name, hsk_color(HSK_COLORS.get(level, P.MUTED))
 
 
 # ---------------------------------------------------------------- detail popup
@@ -130,7 +135,7 @@ class DetailPopup(QDialog):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_DeleteOnClose)
-        self.setStyleSheet(POPUP_QSS)
+        self.setStyleSheet(popup_qss())
         self.text = text = result['text']
         conf = result.get('confidence', 0)
         info, py, meanings = word_entry(text)
@@ -154,7 +159,7 @@ class DetailPopup(QDialog):
         pos_list = info.get('pos', [])
         if pos_list:
             pos = " · ".join(POS_MAP.get(p, p) for p in pos_list[:3])
-            tags.append(f"<span style='color:{MUTED};font-weight:400;'>{html.escape(pos)}</span>")
+            tags.append(f"<span style='color:{P.MUTED};font-weight:400;'>{html.escape(pos)}</span>")
         if tags:
             cl.addWidget(_label("&nbsp;&nbsp;·&nbsp;&nbsp;".join(tags), "tag"))
             cl.addSpacing(2)
@@ -173,7 +178,7 @@ class DetailPopup(QDialog):
 
         if meanings:
             rows = "".join(
-                f"<tr><td style='color:{FAINT};padding:0 10px 6px 0;'>{n}</td>"
+                f"<tr><td style='color:{P.FAINT};padding:0 10px 6px 0;'>{n}</td>"
                 f"<td style='padding-bottom:6px;'>{html.escape(str(m))}</td></tr>"
                 for n, m in enumerate(meanings[:5], 1))
             m = _label(f"<table cellspacing='0'>{rows}</table>", "meaning", wrap=True)
@@ -200,7 +205,8 @@ class DetailPopup(QDialog):
             self.tl_lbl = _label("Translating…", "muted", wrap=True)
             cl.addWidget(self.tl_lbl)
         if self.tl_lbl is not None:
-            self.worker = TranslationWorker(text, config.get('deepl_api_key'))
+            self.worker = TranslationWorker(text, config.get('deepl_api_key'),
+                                            config.get('deepl_target_lang', 'EN-US'))
             self.worker.translated.connect(self._on_translation_done)
             self.worker.start()
 
@@ -253,11 +259,11 @@ class DetailPopup(QDialog):
             self._translation = result_text
             self.tl_lbl.setObjectName("meaning" if self._tl_is_meaning else "translation")
             self.tl_lbl.setTextFormat(Qt.RichText)
-            self.tl_lbl.setText(f"<span style='color:{FAINT};font-size:11px;'>DeepL</span><br>"
+            self.tl_lbl.setText(f"<span style='color:{P.FAINT};font-size:11px;'>DeepL</span><br>"
                                 f"{html.escape(result_text)}")
         else:
             self.tl_lbl.setText(f"DeepL error: {result_text}")
-            self.tl_lbl.setStyleSheet(f"color:{DANGER};")
+            self.tl_lbl.setObjectName("error")
         self.tl_lbl.style().unpolish(self.tl_lbl); self.tl_lbl.style().polish(self.tl_lbl)
         self.adjustSize()
 
@@ -274,7 +280,7 @@ class HoverTooltip(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setStyleSheet(HOVER_QSS)
+        self.setStyleSheet(hover_qss())
         self._hint = None
         self._opacity_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self._opacity_effect)
@@ -340,3 +346,79 @@ class HoverTooltip(QWidget):
     def dismiss(self):
         self._fade_anim.stop()
         self.hide()
+
+
+# ---------------------------------------------------------------- segmented slider
+
+class SegmentedSlider(QAbstractButton):
+    """Pill with two or more labels and a knob that slides to the chosen one."""
+    index_changed = pyqtSignal(int)
+
+    def __init__(self, labels, index=0, segment_w=40, parent=None):
+        super().__init__(parent)
+        self._labels = list(labels)
+        self._index = index
+        self._pos = float(index)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setFixedSize(4 + segment_w * len(self._labels), 28)
+        self._anim = QPropertyAnimation(self, b"knob_pos", self)
+        self._anim.setDuration(140)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _get_pos(self):
+        return self._pos
+
+    def _set_pos(self, v):
+        self._pos = v
+        self.update()
+
+    knob_pos = pyqtProperty(float, _get_pos, _set_pos)
+
+    def index(self):
+        return self._index
+
+    def set_index(self, i, animate=True):
+        if i == self._index:
+            return
+        self._index = i
+        self._anim.stop()
+        if animate:
+            self._anim.setStartValue(self._pos)
+            self._anim.setEndValue(float(i))
+            self._anim.start()
+        else:
+            self._set_pos(float(i))
+        self.index_changed.emit(i)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self.rect().contains(e.pos()):
+            seg = (self.width() - 4) / len(self._labels)
+            self.set_index(max(0, min(len(self._labels) - 1, int((e.pos().x() - 2) // seg))))
+        super().mouseReleaseEvent(e)
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Left, Qt.Key_Right):
+            step = -1 if e.key() == Qt.Key_Left else 1
+            self.set_index(max(0, min(len(self._labels) - 1, self._index + step)))
+            return
+        super().keyPressEvent(e)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(QColor(P.BORDER))
+        p.setBrush(QColor(P.TRACK))
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        seg = (r.width() - 4) / len(self._labels)
+        knob = QRectF(r.left() + 2 + seg * self._pos, r.top() + 2, seg, r.height() - 4)
+        p.setPen(QColor(P.TRACK_KNOB_BORDER))
+        p.setBrush(QColor(P.SURFACE))
+        p.drawRoundedRect(knob, knob.height() / 2, knob.height() / 2)
+        f = QFont("Segoe UI"); f.setPixelSize(11)
+        for i, text in enumerate(self._labels):
+            active = i == self._index
+            f.setBold(active); p.setFont(f)
+            p.setPen(QColor(P.TEXT if active else P.MUTED))
+            p.drawText(QRectF(r.left() + 2 + seg * i, r.top(), seg, r.height()), Qt.AlignCenter, text)
