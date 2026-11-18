@@ -19,7 +19,8 @@ def load_config():
         "deepl_enabled": False,
         "deepl_api_key": "",
         "deepl_always": False,
-        "save_word_key": "s"
+        "save_word_key": "s",
+        "stay_in_tray_after_scan": False
     }
     load_path = CONFIG_FILE if os.path.exists(CONFIG_FILE) else LEGACY_CONFIG_FILE
     if os.path.exists(load_path):

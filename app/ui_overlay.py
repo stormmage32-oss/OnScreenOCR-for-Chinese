@@ -6,7 +6,7 @@ import numpy as np
 from PyQt5 import sip
 from PyQt5.QtWidgets import (QWidget, QMainWindow, QVBoxLayout, QHBoxLayout, QLabel, 
                              QPushButton, QFrame, QScrollArea, QApplication, QRubberBand)
-from PyQt5.QtCore import Qt, QObject, QPoint, QRect, QSize, pyqtSignal, QTimer, QEvent
+from PyQt5.QtCore import Qt, QObject, QPoint, QRect, QRectF, QSize, pyqtSignal, QTimer, QEvent
 from PyQt5.QtGui import QFont, QFontMetrics, QColor, QBrush, QPen, QImage, QPixmap, QPainter, QCursor
 
 from dictionary import lookup_hsk, HSK_COLORS, get_pinyin, get_char_weight
@@ -369,6 +369,41 @@ class OCRCanvas(QLabel):
         self._hover_tooltip.dismiss()
         if self.hovered_idx != -1: self.hovered_idx = -1; self._repaint()
 
+class ScanBadge(QWidget):
+    """"[Esc] Scanned screen" chip in the top-left of a seamless scan.
+
+    The scan shows a still screenshot that looks just like the live screen,
+    so without it the computer seems frozen. It ignores the mouse, so words
+    under it can still be clicked.
+    """
+    TEXT = "Scanned screen · press to close"
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._font = QFont("Segoe UI"); self._font.setPixelSize(13)
+        self._key_font = QFont("Segoe UI"); self._key_font.setPixelSize(12); self._key_font.setBold(True)
+        fm, kfm = QFontMetrics(self._font), QFontMetrics(self._key_font)
+        self._key_w = kfm.horizontalAdvance("Esc") + 14
+        self.setFixedSize(10 + self._key_w + 8 + fm.horizontalAdvance(self.TEXT) + 12, 32)
+        self.move(16, 16)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(20, 20, 20, 215))
+        p.drawRoundedRect(QRectF(self.rect()), 6, 6)
+        key = QRectF(10, 6, self._key_w, self.height() - 12)
+        p.setBrush(QColor(255, 255, 255, 235))
+        p.drawRoundedRect(key, 4, 4)
+        p.setFont(self._key_font); p.setPen(QColor(20, 20, 20))
+        p.drawText(key, Qt.AlignCenter, "Esc")
+        p.setFont(self._font); p.setPen(QColor("#FFFFFF"))
+        p.drawText(self.rect().adjusted(int(key.right()) + 8, 0, 0, 0),
+                   Qt.AlignVCenter | Qt.AlignLeft, self.TEXT)
+
+
 class OverlayWindow(QMainWindow):
     """OCR result window; seamless mode keeps controls hidden until the top edge is reached."""
     seamless_closed = pyqtSignal()
@@ -400,7 +435,10 @@ class OverlayWindow(QMainWindow):
                         min(round(h / scale) + 80, avail.height() - 40))
         self._build(image, results)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self._badge = None
         if self.seamless:
+            self._badge = ScanBadge(self)
+            self._badge.raise_()
             self.setMouseTracking(True)
             self._set_controls_visible(False)
 
@@ -450,6 +488,9 @@ class OverlayWindow(QMainWindow):
     def _set_controls_visible(self, visible):
         self.control_bar.setVisible(visible)
         self.control_bar.setFixedHeight(46 if visible else 0)
+        if self._badge is not None:
+            # The open bar would sit under the badge.
+            self._badge.setVisible(not visible)
 
     def eventFilter(self, watched, event):
         if self.seamless and event.type() == QEvent.MouseMove:

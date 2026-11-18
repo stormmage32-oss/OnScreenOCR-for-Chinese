@@ -17,6 +17,7 @@ from word_notebook import WordNotebookWindow, migrate_and_load_saved_words
 from theme import (BASE_QSS, BG, SURFACE, BORDER, BORDER_HOVER, TEXT, MUTED, FAINT, ACCENT,
                    ACCENT_HOVER, ACCENT_PRESSED, DANGER, SUCCESS, app_icon_pixmap)
 from screens import to_physical
+from deepl_guide import DeepLGuideDialog
 
 logger = logging.getLogger("OCRApp")
 
@@ -90,6 +91,10 @@ QFrame#statusBar {{ background: {SURFACE}; border: none; border-top: 1px solid {
 QLabel#statusText {{ color: {MUTED}; font-size: 11px; }}
 QLabel#statusText[state="ready"] {{ color: {SUCCESS}; }}
 QLabel#statusText[state="error"] {{ color: {DANGER}; }}
+
+QPushButton#link {{ background: transparent; border: none; color: {ACCENT}; font-size: 12px;
+                   padding: 2px 0; text-align: left; }}
+QPushButton#link:hover {{ color: {ACCENT_HOVER}; text-decoration: underline; }}
 
 QFrame#dlg {{ background: {SURFACE}; border: 1px solid {BORDER_HOVER}; border-radius: 8px; }}
 QLabel#dlgTitle {{ font-size: 14px; font-weight: 600; }}
@@ -381,7 +386,7 @@ class MainWindow(QMainWindow):
         gl.addLayout(self._setting_row("DeepL translation",
                                        "Translate sentences on double-click or selection",
                                        self.cb_deepl))
-        key_box = QHBoxLayout(); key_box.setContentsMargins(16, 0, 16, 14); key_box.setSpacing(8)
+        key_box = QHBoxLayout(); key_box.setContentsMargins(16, 0, 16, 4); key_box.setSpacing(8)
         self.le_deepl_key = QLineEdit(self.config.get('deepl_api_key', ''))
         self.le_deepl_key.setEchoMode(QLineEdit.Password)
         self.le_deepl_key.setPlaceholderText("DeepL API key (free)")
@@ -391,6 +396,14 @@ class MainWindow(QMainWindow):
         btn_eye.clicked.connect(lambda: self._toggle_key_visible(btn_eye))
         key_box.addWidget(self.le_deepl_key, 1); key_box.addWidget(btn_eye)
         gl.addLayout(key_box)
+        guide_row = QHBoxLayout(); guide_row.setContentsMargins(16, 0, 16, 10)
+        # Stays clickable while DeepL is off: you need the key before turning it on.
+        btn_guide = QPushButton("How to get a free key"); btn_guide.setObjectName("link")
+        btn_guide.setCursor(Qt.PointingHandCursor)
+        btn_guide.setToolTip("Step-by-step guide, in English or Turkish")
+        btn_guide.clicked.connect(self._open_deepl_guide)
+        guide_row.addWidget(btn_guide); guide_row.addStretch()
+        gl.addLayout(guide_row)
         gl.addWidget(self._divider())
         self.cb_deepl_always = ToggleSwitch(self.config.get('deepl_always', False))
         self.cb_deepl_always.toggled.connect(self._save_deepl_always)
@@ -399,6 +412,16 @@ class MainWindow(QMainWindow):
                                        self.cb_deepl_always))
         self._update_deepl_key_enabled()
         v.addWidget(grp)
+
+        v.addSpacing(20)
+        v.addWidget(_label("Window", "section")); v.addSpacing(8)
+        grp_w, glw = self._group()
+        self.cb_stay_tray = ToggleSwitch(self.config.get('stay_in_tray_after_scan', False))
+        self.cb_stay_tray.toggled.connect(self._save_stay_in_tray)
+        glw.addLayout(self._setting_row("Stay in tray after a scan",
+                                        "Off: this window comes back when a scan is closed",
+                                        self.cb_stay_tray))
+        v.addWidget(grp_w)
 
         v.addSpacing(20)
         v.addWidget(_label("Shortcuts", "section")); v.addSpacing(8)
@@ -469,6 +492,11 @@ class MainWindow(QMainWindow):
         self.le_deepl_key.setEchoMode(QLineEdit.Normal if hidden else QLineEdit.Password)
         btn.setText("Hide" if hidden else "Show")
 
+    def _open_deepl_guide(self):
+        dlg = DeepLGuideDialog(self)
+        dlg.move(self.geometry().center() - dlg.rect().center())
+        dlg.exec_()
+
     def _update_deepl_key_enabled(self):
         self.le_deepl_key.setEnabled(self.cb_deepl.isChecked())
         self.cb_deepl_always.setEnabled(self.cb_deepl.isChecked())
@@ -489,6 +517,26 @@ class MainWindow(QMainWindow):
     def _save_deepl_key(self, text):
         self.config['deepl_api_key'] = text.strip()
         save_config(self.config)
+
+    def _save_stay_in_tray(self, state):
+        self.config['stay_in_tray_after_scan'] = bool(state)
+        save_config(self.config)
+
+    def _stay_in_tray(self):
+        return bool(self.config.get('stay_in_tray_after_scan', False))
+
+    def _after_scan(self):
+        """A scan ended: bring this window back unless the user keeps it in the tray."""
+        if not self._stay_in_tray():
+            self.show_and_raise()
+
+    def _no_text_found(self):
+        if self._stay_in_tray():
+            self.tray_icon.showMessage("Chinese Screen OCR", "No text found.",
+                                       QSystemTrayIcon.Information, 3000)
+        else:
+            self.show_and_raise()
+            QMessageBox.information(self, "Result", "No text found.")
 
     def _start_init(self):
         class _T(QThread):
@@ -584,8 +632,10 @@ class MainWindow(QMainWindow):
             if self._ocr_mode == "seamless":
                 self._show_seamless_overlay(img, r)
                 return
-            self.show(); self._set_buttons(True)
-            if not r: QMessageBox.information(self,"Result","No text found."); return
+            self._set_buttons(True)
+            if not r: self._no_text_found(); return
+            if not self._stay_in_tray():
+                self.show()
             word_results = segment_ocr_results(r, img)
             if self.overlay is not None and not sip.isdeleted(self.overlay):
                 self.overlay.close()
@@ -656,6 +706,7 @@ class MainWindow(QMainWindow):
             self.pinyin_overlay.close()
             self.pinyin_overlay = None
             self._set_buttons(True)
+            self._after_scan()
             return
         if self.ocr_ready and self.btn_seamless.isEnabled():
             self._start_pinyin_overlay()
@@ -664,22 +715,14 @@ class MainWindow(QMainWindow):
         if self.seamless_overlay is not None:
             self._close_seamless()
         elif self.ocr_ready and self.btn_seamless.isEnabled():
-            self._seamless_restore = False
             self._start_seamless()
 
     def _start_seamless_from_button(self):
-        self._seamless_restore = True
         self._start_seamless()
 
     def _end_seamless(self):
-        """Seamless scan ended: bring the window back only if it was started from it."""
         self._set_buttons(True)
-        if getattr(self, "_seamless_restore", False):
-            self._seamless_restore = False
-            self.show_and_raise()
-        else:
-            # Keep the main window hidden so focus returns to the game/app.
-            self.hide()
+        self._after_scan()
 
     def _close_seamless(self):
         if self.seamless_overlay is not None:
@@ -736,8 +779,7 @@ class MainWindow(QMainWindow):
         self._ocr_mode = "normal"
         self._set_buttons(True)
         if not results:
-            self.show()
-            QMessageBox.information(self, "Result", "No text found.")
+            self._no_text_found()
             return
         if self.pinyin_overlay is not None:
             self.pinyin_overlay.close()
@@ -810,7 +852,8 @@ class MainWindow(QMainWindow):
         if latest is not None and self.live_overlay is not None:
             self.live_overlay.set_results(*latest)
 
-    def _stop_live(self):
+    def _stop_live(self, restore_window=True):
+        was_running = self._live_worker is not None
         worker, self._live_worker = self._live_worker, None
         if worker is not None:
             worker.results_changed.disconnect()
@@ -820,6 +863,8 @@ class MainWindow(QMainWindow):
             self.live_overlay.close()
             self.live_overlay = None
         self._set_live_labels(False)
+        if was_running and restore_window:
+            self._after_scan()
 
     def _read_hotkey(self, config_key):
         name = HOTKEY_NAMES[config_key]
@@ -957,7 +1002,7 @@ class MainWindow(QMainWindow):
             event.accept()
 
     def _exit_app(self):
-        self._stop_live()
+        self._stop_live(restore_window=False)
         if self.pinyin_overlay is not None:
             self.pinyin_overlay.close()
         if self.seamless_overlay is not None:
