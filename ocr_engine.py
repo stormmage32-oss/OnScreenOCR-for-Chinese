@@ -32,11 +32,10 @@ def init_ocr() -> bool:
             sys.path.insert(0, paddleocr_data_dir)
         from paddleocr import PaddleOCR
         logger.info("[OCR] Trying PaddleOCR...")
-        # return_word_box makes the recognizer report where each character sits in
-        # its line, which lets the pinyin overlay align labels with the real glyphs.
+        # No return_word_box: PaddleOCR 2.8+ computes those positions assuming its
+        # own input padding, but _bound_rec_shapes pads wider, which squeezed every
+        # box toward the start of its line. _record_char_columns measures them instead.
         init_attempts = [
-            {"use_angle_cls": True, "lang": "ch", "use_gpu": False, "show_log": False, "enable_mkldnn": False,
-             "return_word_box": True},
             {"use_angle_cls": True, "lang": "ch", "use_gpu": False, "show_log": False, "enable_mkldnn": False},
             {"use_angle_cls": True, "lang": "ch", "show_log": False, "enable_mkldnn": False},
             {"use_angle_cls": True, "lang": "ch"},
@@ -105,18 +104,83 @@ def _bound_rec_shapes(engine):
         return  # other models take other preprocessing paths
     resize = rec.resize_norm_img
     height = rec.rec_image_shape[1]
+    content = []  # per resized crop: fraction of the padded input that is image
 
     def bucketed_resize(img, max_wh_ratio):
         width = 320
         while width < height * max_wh_ratio:
             width = int(width * 1.5)  # 320, 480, 720, 1080, 1620, ...
+        h, w = img.shape[:2]
+        content.append(min(width, math.ceil(height * w / max(h, 1))) / width)
         return resize(img, width / height)
 
     rec.resize_norm_img = bucketed_resize
+    _record_char_columns(rec, content)
     rec.rec_batch_num = 3
     # Square filler sorts first by aspect ratio, into the narrowest bucket.
     engine.text_recognizer = _full_batches(rec, rec.rec_batch_num,
                                            np.full((height, height, 3), 255, np.uint8))
+
+
+class _RecResult(tuple):
+    """A recognizer's (text, score), plus where in the line each character was read.
+
+    Stays a 2-tuple so PaddleOCR's own `text, score = rec_result` keeps working.
+    word_info matches PaddleOCR 2.8's return_word_box format:
+    (col_num, [text], [column of each character], None).
+    """
+    word_info = None
+
+
+def _ctc_columns(idx_row):
+    """Centre timestep of every character a CTC decoder emits (0 = blank, repeats merged)."""
+    cols, t, n = [], 0, len(idx_row)
+    while t < n:
+        c = idx_row[t]
+        if c == 0:
+            t += 1
+            continue
+        start = t
+        while t + 1 < n and idx_row[t + 1] == c:
+            t += 1
+        cols.append((start + t) / 2.0)
+        t += 1
+    return cols
+
+
+def _record_char_columns(rec, content):
+    """Make the recognizer report each character's position in its line.
+
+    PaddleOCR 2.7 has no return_word_box, so word boxes were guessed by spreading
+    the text evenly over the line, and every character OCR skipped shifted all
+    boxes after it. The CTC output already says at which column each character
+    fired; this keeps it. content: the bucketed_resize log of image fractions.
+    """
+    post = rec.postprocess_op
+
+    def post_with_columns(preds, *args, **kwargs):
+        out = post(preds, *args, **kwargs)
+        fractions = content[-len(out):] if len(content) >= len(out) else None
+        content.clear()
+        try:
+            p = preds[-1] if isinstance(preds, (list, tuple)) else preds
+            p = p.numpy() if hasattr(p, 'numpy') else np.asarray(p)
+            idx = p.argmax(axis=2)
+        except Exception:
+            return out
+        steps = idx.shape[1]
+        results = []
+        for i, item in enumerate(out):
+            # Drop any word info PaddleOCR added itself; it ignores our padding.
+            r = _RecResult(tuple(item)[:2])
+            if fractions is not None and len(item) >= 2 and item[0]:
+                cols = _ctc_columns(idx[i])
+                if len(cols) == len(item[0]):
+                    r.word_info = (steps * fractions[i], [item[0]], [cols], None)
+            results.append(r)
+        return results
+
+    rec.postprocess_op = post_with_columns
 
 
 _DET_BUCKET = 320  # detector input sides become multiples of this
@@ -243,8 +307,9 @@ def _parse_paddle(image, rec_cache=None):
                 item = {'text': text, 'confidence': float(conf),
                         'bbox': {'x': int(min(xs)), 'y': int(min(ys)),
                                  'w': int(max(xs)-min(xs)), 'h': int(max(ys)-min(ys))}}
-                if len(rec) > 2 and rec[2]:
-                    try: _add_glyph_geometry(item, image, pts, rec[2])
+                word_info = getattr(rec, 'word_info', None)
+                if word_info:
+                    try: _add_glyph_geometry(item, image, pts, word_info)
                     except Exception as e: logger.debug(f"[OCR] glyph geometry skipped: {e}")
                 items.append(item)
         except Exception: pass
@@ -266,6 +331,9 @@ def _add_glyph_geometry(item, image, pts, word_info):
     col_num, word_list, word_col_list, _ = word_info
     if not col_num:
         return
+    b = item['bbox']
+    if b['h'] > b['w'] * 1.5:
+        return  # PaddleOCR rotates vertical crops; columns don't run along x there
     x0 = min(pts[0][0], pts[3][0]); x1 = max(pts[1][0], pts[2][0])
     cell = (x1 - x0) / col_num
     text = item['text']
@@ -279,6 +347,8 @@ def _add_glyph_geometry(item, image, pts, word_info):
     cjk = [(i, centers[i]) for i, ch in enumerate(text) if _is_cjk(ch) and centers[i] is not None]
     if not cjk:
         return
+    if any(b2[1] < a[1] for a, b2 in zip(cjk, cjk[1:])):
+        return  # crop was turned 180° by the angle classifier; columns run backwards
 
     # Character pitch from neighbouring Chinese characters.
     steps = [b[1] - a[1] for a, b in zip(cjk, cjk[1:]) if b[0] == a[0] + 1 and b[1] > a[1]]
@@ -307,6 +377,10 @@ def _add_glyph_geometry(item, image, pts, word_info):
     item['text_h'] = int(height)
     item['chars'] = [{'ch': text[i], 'x': int(round(cx - pitch / 2)), 'w': max(1, int(round(pitch)))}
                      for i, cx in cjk]
+    # Centre of every character OCR read (None where it couldn't be placed),
+    # used to fit clickable word boxes to the glyphs.
+    item['centers'] = centers
+    item['pitch'] = pitch
 
 def take_screenshot(region=None) -> np.ndarray:
     with mss.mss() as sct:
@@ -327,7 +401,7 @@ def run_ocr_oriented(image: np.ndarray, manga_mode=False, rec_cache=None) -> lis
     h = image.shape[0]
     for r in res:
         # Glyph geometry is measured in the rotated image; fall back to the box.
-        for key in ('chars', 'text_top', 'text_h'):
+        for key in ('chars', 'text_top', 'text_h', 'centers', 'pitch'):
             r.pop(key, None)
         old_b = r['bbox']
         rx, ry = old_b['x'], old_b['y']

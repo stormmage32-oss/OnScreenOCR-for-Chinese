@@ -2,6 +2,7 @@ import os
 import logging
 import warnings
 import re
+import numpy as np
 from functools import lru_cache
 from app_paths import bundled_path
 
@@ -189,7 +190,7 @@ def get_derived_hsk_level(word: str) -> tuple[int, bool]:
 def get_char_weight(ch: str) -> float:
     if '\u4e00' <= ch <= '\u9fff' or '\u3400' <= ch <= '\u4dbf':
         return 1.0
-    if ch in '，。！？；：（）“”‘’【】《》':
+    if ch in '，。！？；：（）“”‘’【】《》「」『』〈〉、…—～':
         return 1.0
     if ch.isspace():
         return 0.4
@@ -198,59 +199,208 @@ def get_char_weight(ch: str) -> float:
 def _has_chinese(text: str) -> bool:
     return any('\u3400' <= ch <= '\u4dbf' or '\u4e00' <= ch <= '\u9fff' for ch in text)
 
-def segment_ocr_results(results):
+_ASCII_PUNCT = ',.!?;:()'
+
+
+def _layout_weights(text: str) -> list:
+    """Relative on-screen width of every character in an OCR line."""
+    cjk_line = _has_chinese(text)
+    out = []
+    for i, ch in enumerate(text):
+        w = get_char_weight(ch)
+        if cjk_line and ch in _ASCII_PUNCT:
+            prev_digit = i > 0 and text[i - 1].isdigit()
+            next_digit = i + 1 < len(text) and text[i + 1].isdigit()
+            # OCR often reports "，" as ",": in a Chinese line it still takes a
+            # full cell. A separator inside a number ("1,566") stays narrow.
+            if not (prev_digit and next_digit):
+                w = 1.0
+        out.append(w)
+    return out
+
+
+def _ink_span(image, bbox, vertical, max_trim):
+    """Start/end offsets of the text's ink along the line, trimming at most max_trim per side.
+
+    PaddleOCR's line boxes have some empty margin; spreading characters over
+    that margin shifts every box. Returns (0, size) when the image can't tell.
+    """
+    size = bbox['h'] if vertical else bbox['w']
+    if image is None or max_trim < 1:
+        return 0.0, float(size)
+    try:
+        img_h, img_w = image.shape[:2]
+        x1, y1 = max(0, bbox['x']), max(0, bbox['y'])
+        x2, y2 = min(img_w, bbox['x'] + bbox['w']), min(img_h, bbox['y'] + bbox['h'])
+        if x2 - x1 < 4 or y2 - y1 < 4:
+            return 0.0, float(size)
+        crop = image[y1:y2, x1:x2].astype(np.int16)
+        if crop.ndim == 2:
+            crop = crop[:, :, None]
+        border = np.concatenate([crop[0], crop[-1], crop[:, 0], crop[:, -1]])
+        diff = np.abs(crop - np.median(border, axis=0)).sum(axis=2)
+        # Low threshold: faint anti-aliased edges must count as text.
+        profile = (diff > 60).sum(axis=1 if vertical else 0)
+        cols = np.nonzero(profile)[0]
+        if len(cols) == 0:
+            return 0.0, float(size)
+        off = (y1 - bbox['y']) if vertical else (x1 - bbox['x'])
+        start = min(float(cols[0] + off), max_trim)
+        end = max(float(cols[-1] + 1 + off), size - max_trim)
+        if end - start < size * 0.5:
+            return 0.0, float(size)
+        return start, end
+    except Exception as e:
+        logger.debug(f"[SEG] ink span failed: {e}")
+        return 0.0, float(size)
+
+
+def _char_positions(res):
+    """Text index -> (x, w) of Chinese characters whose position OCR reported."""
+    chars = res.get('chars')
+    if not chars:
+        return {}
+    pos, k = {}, 0
+    for i, ch in enumerate(res['text']):
+        if k < len(chars) and chars[k]['ch'] == ch:
+            pos[i] = (chars[k]['x'], chars[k]['w'])
+            k += 1
+    return pos
+
+
+def _line_ink(image, bbox):
+    """(ink mask of the line box, its x, its y), or None. Background = median border colour."""
+    if image is None:
+        return None
+    try:
+        img_h, img_w = image.shape[:2]
+        x1, y1 = max(0, bbox['x']), max(0, bbox['y'])
+        x2, y2 = min(img_w, bbox['x'] + bbox['w']), min(img_h, bbox['y'] + bbox['h'])
+        if x2 - x1 < 4 or y2 - y1 < 4:
+            return None
+        crop = image[y1:y2, x1:x2].astype(np.int16)
+        if crop.ndim == 2:
+            crop = crop[:, :, None]
+        border = np.concatenate([crop[0], crop[-1], crop[:, 0], crop[:, -1]])
+        diff = np.abs(crop - np.median(border, axis=0)).sum(axis=2)
+        if diff.max() < 60:
+            return None
+        # Low threshold so the faint anti-aliased edges of strokes count as text.
+        return diff > max(60, diff.max() * 0.2), x1, y1
+    except Exception as e:
+        logger.debug(f"[SEG] line ink failed: {e}")
+        return None
+
+
+def _fitted_word_box(res, first, last, ink, pad=2):
+    """Box hugging the glyphs of text[first:last], or None.
+
+    OCR says where each character's centre is. The word may only take ink from
+    halfway to its neighbours' centres (and at most ~0.6 character from its own
+    outer characters, so a character OCR skipped isn't swallowed); inside that
+    range the box is cut to the exact ink. Height is the line's text band.
+    """
+    centers, pitch = res.get('centers'), res.get('pitch')
+    if not centers or not pitch or ink is None:
+        return None
+    known = [i for i in range(first, last) if centers[i] is not None]
+    if not known:
+        return None
+    mask, mx, my = ink
+    c_first, c_last = centers[known[0]], centers[known[-1]]
+    prev = next((centers[i] for i in range(first - 1, -1, -1) if centers[i] is not None), None)
+    nxt = next((centers[i] for i in range(last, len(centers)) if centers[i] is not None), None)
+    left = c_first - 0.52 * pitch
+    right = c_last + 0.52 * pitch
+    if prev is not None:
+        left = max(left, (prev + c_first) / 2)
+    if nxt is not None:
+        right = min(right, (c_last + nxt) / 2)
+
+    a, b = int(round(left)) - mx, int(round(right)) - mx
+    a, b = max(0, a), min(mask.shape[1], b)
+    if b - a < 2:
+        return None
+    cols = np.nonzero(mask[:, a:b].any(axis=0))[0]
+    if len(cols) == 0:
+        return None
+    x0, x1 = mx + a + cols[0], mx + a + cols[-1] + 1
+    if x1 - x0 < 0.3 * pitch * len(known) / max(1, last - first):
+        return None  # found only a speck: not the glyphs we expected
+
+    if 'text_top' in res:
+        y0, y1 = res['text_top'], res['text_top'] + res['text_h']
+    else:
+        rows = np.nonzero(mask.any(axis=1))[0]
+        y0, y1 = my + rows[0], my + rows[-1] + 1
+    return {'x': int(x0 - pad), 'y': int(y0 - pad), 'w': int(x1 - x0 + 2 * pad), 'h': int(y1 - y0 + 2 * pad)}
+
+
+def segment_ocr_results(results, image=None):
+    """Split OCR lines into clickable dictionary words with their own boxes.
+
+    When OCR reports where each character sits ('chars'), boxes come from that,
+    so a character OCR skipped can't shift the rest of the line. Otherwise words
+    are spread over the line by character width. image: the screenshot the
+    results came from; it is only used to trim the line box's empty margin.
+    """
     word_results = []
     for res in results:
         text = res['text']
         bbox = res['bbox']
         conf = res.get('confidence', 0)
         words = list(jieba.cut(text, cut_all=False))
-        
-        total_weight = sum(get_char_weight(c) for c in text)
+        weights = _layout_weights(text)
+        total_weight = sum(weights)
         if total_weight == 0:
             word_results.append(res)
             continue
-            
+
         is_vertical = bbox['h'] > bbox['w'] * 1.5
         box_size = bbox['h'] if is_vertical else bbox['w']
-        cursor = float(bbox['y'] if is_vertical else bbox['x'])
-        
+        # Never trim more than half a character from either end.
+        start, end = _ink_span(image, bbox, is_vertical, 0.5 * box_size / total_weight)
+        unit = (end - start) / total_weight
+        cursor = float(bbox['y'] if is_vertical else bbox['x']) + start
+        char_pos = {} if is_vertical else _char_positions(res)
+        ink = None if is_vertical or not res.get('centers') else _line_ink(image, bbox)
+
+        idx = 0
         for w in words:
-            w_weight = sum(get_char_weight(c) for c in w)
-            w_size = box_size * (w_weight / total_weight)
+            first = idx
+            w_size = unit * sum(weights[idx:idx + len(w)])
+            idx += len(w)
 
             # Paddle can return mixed lines. Do not draw clickable boxes for
             # their Latin-only fragments in a Chinese reader.
-            if not _has_chinese(w):
+            if not _has_chinese(w) or not w.strip():
                 cursor += w_size
                 continue
-            
-            if w.strip():
-                hsk_info = lookup_hsk(w)
-                if is_vertical:
-                    new_bbox = {
-                        'x': bbox['x'],
-                        'y': int(round(cursor)),
-                        'w': bbox['w'],
-                        'h': max(int(round(w_size)), 2)
-                    }
-                else:
-                    new_bbox = {
-                        'x': int(round(cursor)),
-                        'y': bbox['y'],
-                        'w': max(int(round(w_size)), 2),
-                        'h': bbox['h']
-                    }
-                
-                word_results.append({
-                    'text': w,
-                    'confidence': conf,
-                    'bbox': new_bbox,
-                    'hsk': hsk_info,
-                    'original_sentence': text
-                })
+
+            known = [char_pos[i] for i in range(first, idx) if i in char_pos]
+            fitted = None if is_vertical else _fitted_word_box(res, first, idx, ink)
+            if fitted is not None:
+                new_bbox = fitted
+            elif is_vertical:
+                new_bbox = {'x': bbox['x'], 'y': int(round(cursor)),
+                            'w': bbox['w'], 'h': max(int(round(w_size)), 2)}
+            elif known:
+                left = min(x for x, _ in known)
+                right = max(x + cw for x, cw in known)
+                new_bbox = {'x': int(left), 'y': bbox['y'], 'w': max(int(right - left), 2), 'h': bbox['h']}
+            else:
+                new_bbox = {'x': int(round(cursor)), 'y': bbox['y'],
+                            'w': max(int(round(w_size)), 2), 'h': bbox['h']}
+            word_results.append({
+                'text': w,
+                'confidence': conf,
+                'bbox': new_bbox,
+                'hsk': lookup_hsk(w),
+                'original_sentence': text
+            })
             cursor += w_size
     return word_results
+
 
 def get_pinyin(text: str) -> str:
     try:
