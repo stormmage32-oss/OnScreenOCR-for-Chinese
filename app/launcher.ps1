@@ -3,12 +3,13 @@
 # Started by "Chinese Screen OCR.bat". When the environment is ready it starts the
 # app straight away without showing anything. Otherwise it opens a small setup
 # window that shows progress and a log while it:
-#   1. finds Python 3.12 (64-bit), or installs it for this Windows user from python.org
+#   1. finds Python 3.12 (64-bit), or unpacks the Python Software Foundation's
+#      portable package into %LOCALAPPDATA%\ChineseScreenOCR (nothing is installed)
 #   2. creates the virtual environment .venv\
 #   3. installs the pinned packages from app\requirements.txt
 #   4. checks the installed versions and imports
 #   5. loads the OCR engine once (its models ship in app\models)
-# and then starts the app. Apart from that Python install, everything stays in this folder.
+# and then starts the app. Apart from that Python copy, everything stays in this folder.
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
@@ -211,29 +212,30 @@ $worker = {
         return $null
     }
 
-    # Python 3.12 (64-bit) installs registered with Windows (PEP 514), as
-    # @{ Exe = <python.exe path>; PerUser = <bool> }. The python.org installer
-    # writes these keys, also for installs in custom folders.
+    # python.exe paths of Python 3.12 installs registered with Windows (PEP 514).
+    # The python.org installer writes these keys, also for custom folders.
     function Get-RegisteredPython {
         foreach ($hive in @('HKCU:', 'HKLM:')) {
             $key = "$hive\Software\Python\PythonCore\3.12\InstallPath"
             if (-not (Test-Path $key)) { continue }
             $item = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue
             if (-not $item) { continue }
-            $exe = $null
-            if ($item.PSObject.Properties['ExecutablePath']) { $exe = $item.ExecutablePath }
-            elseif ($item.PSObject.Properties['(default)']) { $exe = Join-Path $item.'(default)' 'python.exe' }
-            if ($exe) { @{ Exe = $exe; PerUser = ($hive -eq 'HKCU:') } }
+            if ($item.PSObject.Properties['ExecutablePath']) { $item.ExecutablePath }
+            elseif ($item.PSObject.Properties['(default)']) { Join-Path $item.'(default)' 'python.exe' }
         }
     }
 
+    # Where setup unpacks its own copy of Python (shared by every copy of the app).
+    $portablePython = Join-Path $env:LOCALAPPDATA 'ChineseScreenOCR\python-3.12.10'
+
     function Find-Python {
         $candidates = @(
+            (Join-Path $portablePython 'python.exe'),
             (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'),
             (Join-Path $env:ProgramFiles 'Python312\python.exe'),
             (Join-Path $p.Runtime 'python\python.exe')   # where older versions of this setup put it
         )
-        $candidates += @(Get-RegisteredPython | ForEach-Object { $_.Exe })
+        $candidates += @(Get-RegisteredPython)
         foreach ($c in $candidates) { $found = Test-Python $c; if ($found) { return $found } }
         $py = Get-Command py.exe -ErrorAction SilentlyContinue
         if ($py) {
@@ -300,45 +302,36 @@ $worker = {
             if ($base) {
                 Log "Found $base"
             } else {
-                Step 1 'Downloading Python 3.12 from python.org'
-                $installer = Join-Path $env:TEMP 'python-3.12.10-amd64.exe'
-                Get-File 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe' $installer 'Downloading Python 3.12'
-                $sig = Get-AuthenticodeSignature -FilePath $installer
-                if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Python Software Foundation') {
-                    Fail "The downloaded Python installer is not signed by the Python Software Foundation ($($sig.Status))."
-                }
-                Log 'Installer signature: Python Software Foundation (valid)'
+                # The Python Software Foundation's own NuGet package: a complete
+                # Python in a zip. Unlike the python.org installer it registers
+                # nothing with Windows, so an earlier or broken Python install
+                # can't get in the way (the installer then silently does nothing).
+                Step 1 'Downloading Python 3.12'
+                $pkg = Join-Path $env:TEMP 'python.3.12.10.nupkg'
+                Get-File 'https://api.nuget.org/v3-flatcontainer/python/3.12.10/python.3.12.10.nupkg' $pkg 'Downloading Python 3.12'
+                Send 'status' 'Unpacking Python 3.12' $null
                 Send 'progress' $null -1
-                $installLog = Join-Path (Split-Path $p.SetupLog -Parent) 'python-install.log'
-
-                # A per-user 3.12 that is still registered but whose folder was deleted
-                # makes the installer believe it is installed: it exits at once and
-                # installs nothing. Remove that registration first.
-                if (@(Get-RegisteredPython | Where-Object { $_.PerUser }).Count -gt 0) {
-                    Send 'status' 'Removing a broken Python 3.12 registration' $null
-                    Log 'A registered Python 3.12 is missing or broken; uninstalling its registration first'
-                    $un = Start-Process -FilePath $installer -ArgumentList @('/quiet', '/uninstall', '/log', "`"$installLog`"") -Wait -PassThru
-                    Log "Uninstall exit code $($un.ExitCode)"
-                }
-
-                # Standard per-user location (no administrator rights needed). It stays
-                # usable when this folder is deleted or downloaded again.
-                Send 'status' 'Installing Python 3.12 (for this Windows user)' $null
-                $installArgs = @('/quiet', 'InstallAllUsers=0', 'PrependPath=0', 'Include_launcher=0',
-                                 'InstallLauncherAllUsers=0', 'Include_test=0', 'Include_doc=0', 'Include_tcltk=0',
-                                 'Shortcuts=0', 'AssociateFiles=0', 'Include_pip=1', '/log', "`"$installLog`"")
-                $proc = Start-Process -FilePath $installer -ArgumentList $installArgs -Wait -PassThru
-                Remove-Item $installer -ErrorAction SilentlyContinue
-                $base = Find-Python
-                if (-not $base) {
-                    if (Test-Path $installLog) {
-                        Log '--- end of the Python installer log ---'
-                        Get-Content -Path $installLog -Tail 25 | ForEach-Object { Log $_ }
+                $unpack = "$portablePython.partial"
+                if (Test-Path $unpack) { Remove-Item -Recurse -Force $unpack }
+                Add-Type -AssemblyName System.IO.Compression.FileSystem
+                [IO.Compression.ZipFile]::ExtractToDirectory($pkg, $unpack)
+                Remove-Item $pkg -ErrorAction SilentlyContinue
+                foreach ($f in @('python.exe', 'pythonw.exe', 'python312.dll')) {
+                    $sig = Get-AuthenticodeSignature -FilePath (Join-Path $unpack "tools\$f")
+                    if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Python Software Foundation') {
+                        Remove-Item -Recurse -Force $unpack -ErrorAction SilentlyContinue
+                        Fail "The downloaded Python ($f) is not signed by the Python Software Foundation ($($sig.Status))."
                     }
-                    Fail ("Python 3.12 could not be installed (installer exit code $($proc.ExitCode)). " +
-                          'Install Python 3.12 from python.org yourself, then start the app again.')
                 }
-                Log "Installed $base"
+                Log 'Signature: Python Software Foundation (valid)'
+                if (Test-Path $portablePython) { Remove-Item -Recurse -Force $portablePython }
+                Move-Item -Path (Join-Path $unpack 'tools') -Destination $portablePython
+                Remove-Item -Recurse -Force $unpack -ErrorAction SilentlyContinue
+                $base = Test-Python (Join-Path $portablePython 'python.exe')
+                if (-not $base) {
+                    Fail 'The downloaded Python 3.12 does not start. Try again, or install Python 3.12 from python.org yourself.'
+                }
+                Log "Unpacked $base"
             }
         }
 
