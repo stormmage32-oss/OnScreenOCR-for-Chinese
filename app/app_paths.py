@@ -17,28 +17,39 @@ def install_dir_path(*parts):
     return os.path.join(base_dir, *parts)
 
 
+def ascii_path(path):
+    """The same existing path in plain ASCII when possible.
+
+    Qt 5 and Paddle's C++ engine read file paths through the ANSI code page, so
+    they fail inside folders such as "...\\Masaüstü\\...". Windows' 8.3 short name
+    of the folder is ASCII. Returns the path unchanged when it is already ASCII
+    or the drive has no short names.
+    """
+    if sys.platform != "win32" or path.isascii() or not os.path.exists(path):
+        return path
+    import ctypes
+    buf = ctypes.create_unicode_buffer(32768)
+    if ctypes.windll.kernel32.GetShortPathNameW(path, buf, len(buf)) and buf.value.isascii():
+        return buf.value
+    return path
+
+
 def use_short_qt_plugin_path():
     """Let Qt 5 find its plugins when the app sits in a non-ASCII folder.
 
-    Qt 5 reads its plugin folder through the ANSI code page, so from a path such
-    as "...\\Masaüstü\\..." it can't load the "windows" platform plugin and the app
-    stops with "no Qt platform plugin could be initialized". Windows' 8.3 short
-    name of the same folder is plain ASCII. Call before importing PyQt5.
+    From a path such as "...\\Masaüstü\\..." Qt can't load the "windows" platform
+    plugin and stops with "no Qt platform plugin could be initialized".
+    Call before importing PyQt5.
     """
-    if sys.platform != "win32":
-        return
-    import ctypes
     import importlib.util
     spec = importlib.util.find_spec("PyQt5")
     if spec is None or not spec.submodule_search_locations:
         return
     plugins = os.path.join(list(spec.submodule_search_locations)[0], "Qt5", "plugins")
-    if plugins.isascii() or not os.path.isdir(plugins):
-        return
-    buf = ctypes.create_unicode_buffer(32768)
-    if ctypes.windll.kernel32.GetShortPathNameW(plugins, buf, len(buf)) and buf.value.isascii():
-        os.environ["QT_PLUGIN_PATH"] = buf.value
-        os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = os.path.join(buf.value, "platforms")
+    short = ascii_path(plugins)
+    if short != plugins:
+        os.environ["QT_PLUGIN_PATH"] = short
+        os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = os.path.join(short, "platforms")
 
 
 def user_data_dir():

@@ -2,7 +2,7 @@
 
     python check_env.py versions   every package in requirements.txt is installed at its pinned version
     python check_env.py imports    the libraries the app needs can be imported
-    python check_env.py models     PaddleOCR loads (downloads its model files the first time)
+    python check_env.py models     PaddleOCR loads with the models in app/models
 
 Prints one line per problem and exits 1 on failure, 0 on success.
 """

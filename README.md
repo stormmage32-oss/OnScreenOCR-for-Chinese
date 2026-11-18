@@ -59,12 +59,13 @@ All shortcuts can be changed in **Settings**.
 ```text
 Chinese Screen OCR.bat   start here
 app\                     the application (Python), dictionaries and the setup script (launcher.ps1)
+app\models\              PaddleOCR's Chinese OCR models (included, so nothing is downloaded from China)
 app\requirements.txt     exact library versions the setup installs
 examples\                images for this README
 ```
 
 ## Credits
 
-- [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) for Chinese OCR.
+- [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) for Chinese OCR. Its PP-OCRv4 Chinese models (Apache 2.0) are included in `app/models`.
 - CC-CEDICT dictionary data by MDBG and the CC-CEDICT contributors, under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 - jieba and pypinyin for word segmentation and pinyin.

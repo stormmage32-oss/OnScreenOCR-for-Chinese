@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 import logging
 import threading
@@ -9,7 +8,7 @@ from collections import OrderedDict
 import numpy as np
 import mss
 from PyQt5.QtCore import QThread, pyqtSignal
-from app_paths import bundled_path
+from app_paths import ascii_path, bundled_path
 
 logger = logging.getLogger("OCRApp")
 
@@ -24,22 +23,42 @@ def _contains_chinese(text: str) -> bool:
     return any('\u3400' <= char <= '\u4dbf' or '\u4e00' <= char <= '\u9fff'
                for char in text)
 
+# PaddleOCR's default Chinese models, shipped in app/models. Otherwise PaddleOCR
+# downloads them from Baidu's Beijing server, which outside China can take half
+# an hour at a few KB/s.
+_BUNDLED_MODELS = {
+    "det_model_dir": "ch_PP-OCRv4_det_infer",
+    "rec_model_dir": "ch_PP-OCRv4_rec_infer",
+    "cls_model_dir": "ch_ppocr_mobile_v2.0_cls_infer",
+}
+
+
+def _bundled_model_dirs() -> dict:
+    """PaddleOCR *_model_dir arguments for the shipped models, or {} if any is missing."""
+    dirs = {}
+    for arg, name in _BUNDLED_MODELS.items():
+        path = bundled_path("models", name)
+        if not all(os.path.isfile(os.path.join(path, f)) for f in ("inference.pdmodel", "inference.pdiparams")):
+            logger.warning(f"[OCR] Bundled model missing: {path}; PaddleOCR will download it")
+            return {}
+        dirs[arg] = ascii_path(path)  # Paddle can't open model files under non-ASCII paths
+    return dirs
+
+
 def init_ocr() -> bool:
     global OCR_ENGINE, OCR_TYPE
     try:
-        paddleocr_data_dir = bundled_path("paddleocr")
-        if os.path.isdir(paddleocr_data_dir) and paddleocr_data_dir not in sys.path:
-            sys.path.insert(0, paddleocr_data_dir)
         from paddleocr import PaddleOCR
         logger.info("[OCR] Trying PaddleOCR...")
+        models = _bundled_model_dirs()
         # No return_word_box: PaddleOCR 2.8+ computes those positions assuming its
         # own input padding, but _bound_rec_shapes pads wider, which squeezed every
         # box toward the start of its line. _record_char_columns measures them instead.
         init_attempts = [
-            {"use_angle_cls": True, "lang": "ch", "use_gpu": False, "show_log": False, "enable_mkldnn": False},
-            {"use_angle_cls": True, "lang": "ch", "show_log": False, "enable_mkldnn": False},
-            {"use_angle_cls": True, "lang": "ch"},
-            {"lang": "ch"},
+            {"use_angle_cls": True, "lang": "ch", "use_gpu": False, "show_log": False, "enable_mkldnn": False, **models},
+            {"use_angle_cls": True, "lang": "ch", "show_log": False, "enable_mkldnn": False, **models},
+            {"use_angle_cls": True, "lang": "ch", **models},
+            {"lang": "ch", **models},
         ]
         last_error = None
         for kwargs in init_attempts:

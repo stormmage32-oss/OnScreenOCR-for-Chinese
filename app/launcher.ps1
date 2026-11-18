@@ -7,9 +7,8 @@
 #   2. creates the virtual environment .venv\
 #   3. installs the pinned packages from app\requirements.txt
 #   4. checks the installed versions and imports
-#   5. downloads the OCR model files
-# and then starts the app. Nothing outside this folder is changed, except
-# PaddleOCR's model cache in the user's profile.
+#   5. loads the OCR engine once (its models ship in app\models)
+# and then starts the app. Nothing outside this folder is changed.
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
@@ -355,7 +354,7 @@ $worker = {
         }
 
         # 5. OCR models -----------------------------------------------------------
-        Step 5 'Downloading the OCR models'
+        Step 5 'Loading the OCR engine'
         Send 'progress' $null -1
         if ((Invoke-Logged $venvPy @('-u', $check, 'models') $null) -ne 0) { Fail 'The OCR engine could not be loaded. See the log.' }
 
