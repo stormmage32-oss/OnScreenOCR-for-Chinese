@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Build hsk_dict.py from New HSK 3.0 PDF vocabulary files.
-Run once: python build_hsk_dict.py
+Run once: python app/tools/build_hsk_dict.py (needs pdfplumber; writes app/hsk_dict.py)
 
 CRITICAL FIX: These PDFs use Kangxi Radicals (U+2F00-U+2FDF) and CJK
 Compatibility Ideographs instead of standard CJK Unified Ideographs.
@@ -13,7 +13,8 @@ import pdfplumber
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 warnings.filterwarnings("ignore")
 
-BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "files 0.12", "HSK3.0 Levels")
+# PDFs live next to the repository folder; this script is in <repo>/app/tools.
+BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "files 0.12", "HSK3.0 Levels")
 
 PDF_FILES = {
     1: "New-HSK-Vocabulary-Level-1.pdf",
@@ -134,7 +135,7 @@ for level, filename in PDF_FILES.items():
 print(f"\nTotal entries: {len(all_entries)}")
 
 # Write hsk_dict.py
-out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hsk_dict.py")
+out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hsk_dict.py")
 with open(out_path, 'w', encoding='utf-8') as f:
     f.write("# -*- coding: utf-8 -*-\n")
     f.write("# Auto-generated from New HSK 3.0 PDF vocabulary files\n")

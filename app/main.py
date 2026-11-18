@@ -1,17 +1,24 @@
 import sys
 import os
 import logging
+
+# Started without a console (pythonw.exe), stdout/stderr are None and any library
+# that prints or draws a progress bar (PaddleOCR's model download) would crash.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w', encoding='utf-8')
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w', encoding='utf-8')
+
+from app_paths import use_short_qt_plugin_path
+use_short_qt_plugin_path()  # before PyQt5 is imported
+
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 from app_paths import user_data_path
 
-# Prevent DLL conflicts by importing ML libraries before PyQt5
-try: import torch
-except Exception: pass
-try: import paddle
-except Exception: pass
-try: import onnxruntime
+# Load Paddle's DLLs early so they win over any conflicting copies.
+try: import paddle  # noqa: F401
 except Exception: pass
 
 if sys.platform == 'win32':
@@ -37,9 +44,20 @@ logging.basicConfig(
     handlers=[
         logging.FileHandler(LOG_FILE, encoding='utf-8'),
         logging.StreamHandler(sys.stdout)
-    ]
+    ],
+    # Paddle configures logging when it is imported above, which made this call a
+    # no-op: nothing was ever written to the log file.
+    force=True,
 )
 logger = logging.getLogger("OCRApp")
+
+
+def _log_uncaught(exc_type, exc, tb):
+    # Without a console an uncaught error would vanish; keep it in the log file.
+    logger.critical("Uncaught exception", exc_info=(exc_type, exc, tb))
+
+
+sys.excepthook = _log_uncaught
 
 from ui_main import MainWindow
 

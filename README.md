@@ -1,115 +1,70 @@
 # Chinese Screen OCR
 
-Chinese Screen OCR is a small Windows tool for reading Chinese text directly from the screen. It is useful for games, manga, screenshots, videos, websites, and any app where the text is not easy to copy.
+A Windows tool for reading Chinese text anywhere on the screen: games, manga, videos, websites, screenshots, any app where the text can't be copied. Scan an area, click a word for its pinyin and meaning, or keep pinyin floating over a game while you play.
 
-You can scan a selected area, scan the full screen, click recognized words for dictionary details, or show a temporary pinyin overlay on top of the current screen.
+## Getting started
+
+1. Download this folder (on GitHub: **Code → Download ZIP**, then extract it).
+2. Double-click **`Chinese Screen OCR.bat`**.
+
+The first start opens a setup window that shows each step and a log while it installs everything. It needs an internet connection and takes a few minutes (about 400 MB to download). After that, the same file starts the app directly.
+
+- If Python 3.12 isn't installed, setup downloads it from python.org into this folder. Nothing is installed system-wide, and no administrator rights are needed.
+- Everything lives in this folder (`.venv` and `.runtime`). To uninstall, delete the folder.
+- If setup stops, the window shows why. **Try again** continues where it left off; **Open log file** opens the full log.
+
+Requirements: Windows 10 or 11, 64-bit.
 
 ## Examples
 
-### Game Text
+### Game text
 
-![Chinese pinyin overlay on game text](EXAMPLES/Game.webp)
+![Pinyin over game text](examples/Game.webp)
 
-The pinyin overlay can sit on top of game menus and dialogue without opening a separate result window. Press the overlay hotkey again to hide it and continue playing.
+### Manga / vertical text
 
-### Manga / Vertical Text
-
-![Chinese OCR on manga text](EXAMPLES/Manga.webp)
-
-Manga mode helps with vertical Chinese text. You can scan a panel, inspect recognized words, and save vocabulary while reading.
+![OCR on a manga page](examples/Manga.webp)
 
 ## Features
 
-- Region scan: drag over any part of the screen and run OCR on that area.
-- Full screen scan: scan the active screen with a hotkey.
-- Pinyin overlay: show pinyin directly above Chinese characters, then toggle it off with the same hotkey.
-- Live Pinyin (game mode): keeps scanning the screen and draws pinyin above every Chinese character in real time. The layer is click-through and never takes focus, so you keep playing normally; labels disappear as soon as their characters leave the screen. Works over windowed and borderless-windowed games (exclusive fullscreen games draw above every other window).
-- SEAMLESS mode: scan the active screen into a borderless, full-screen OCR view. The controls stay hidden for immersion and appear only when the mouse reaches the top edge; press its hotkey or `Esc` to return straight to the game/app.
-- Adaptive pinyin color: overlay text changes color based on the screen area behind it for better contrast.
-- Dictionary popups: click recognized text to see pinyin, meanings, and HSK information.
-- Hover hints: hover over recognized boxes for quick word feedback.
-- Manga mode: rotate OCR handling for vertical Chinese text.
-- DeepL translation: optional translation of a double-clicked word or a dragged text selection with your own DeepL API key.
-- Vocabulary notebook: save words and export them for Anki.
-- System tray support: keep the app running in the background.
-- Offline dictionary: CC-CEDICT (current bundled release: 2026-09-07) and HSK data are bundled locally.
+- **Select region**: drag a box over any part of the screen and read it.
+- **Seamless mode**: scan the screen under the mouse into a borderless view and click words right where they are. `Esc` returns to the game or app.
+- **Live pinyin**: keeps scanning the screen (or a box you draw) and shows pinyin above every Chinese character in real time. The layer never takes clicks or focus, so you keep playing.
+- **Dictionary popup**: click a word for its pinyin, meanings and HSK level. Drag over several words to look them up together.
+- **Save words**: hover a word and press `S` (configurable), or use Save in the popup. Saved words can be searched and exported for Anki.
+- **DeepL translation** (optional, with your own free API key): phrases that aren't in the dictionary are translated automatically; double-click or turn on *Always translate* for any word.
+- **Manga mode** for vertical text.
+- Offline dictionary: CC-CEDICT and HSK word lists are included.
 
-## Hotkeys
+## Shortcuts
 
-- Full screen scan: `Alt+S` by default.
-- Pinyin overlay: `Alt+P` by default.
-- SEAMLESS mode: `Alt+Shift+S` by default.
-- Live Pinyin (game mode) on/off: `Alt+L` by default.
+| Action | Default |
+|---|---|
+| Seamless mode | `Alt+Shift+S` |
+| Pinyin overlay | `Alt+P` |
+| Live pinyin | `Alt+L` |
+| Live pinyin in a region | `Alt+Shift+L` |
+| Save the word under the mouse (in a scan) | `S` |
 
-All hotkeys can be changed from the main window.
-
-## Requirements
-
-- Windows.
-- Python 3.8 to 3.12 for running from source with `START.bat`.
-- Python 3.10 or 3.11 plus Inno Setup 6 if you want to build the setup installer.
-
-The first OCR run may download PaddleOCR model files. After that, normal OCR and dictionary lookup can work offline.
-
-## Quick Start
-
-1. Download or clone this repository.
-2. Double-click `START.bat`.
-3. Wait for the first-time dependency setup to finish.
-4. Use `Select Region & Scan`, `Scan Full Screen`, or the hotkeys.
-
-On later runs, `START.bat` reuses the local `.venv` and starts faster.
-
-## Manual Run
-
-If you prefer doing the steps yourself:
-
-1. Run `install.bat`.
-2. Run `run.bat`.
-
-## Building
-
-### Setup Installer
-
-To create a Windows setup installer, double-click:
-
-```text
-build_setup.bat
-```
-
-or:
-
-```text
-build_installer.bat
-```
-
-The installer is written to:
-
-```text
-installer_output\ChineseScreenOCR-Setup.exe
-```
-
-This build uses `.build-venv`, PyInstaller, and Inno Setup. Build output folders are ignored by git.
-
-### Lightweight Launcher EXE
-
-`build_exe.bat` creates only a small launcher executable. It is not the setup installer.
-
-PyInstaller will create `build/`, `dist/`, and a root `ChineseScreenOCR.exe` while doing this. Those files are build outputs.
+All shortcuts can be changed in **Settings**.
 
 ## Troubleshooting
 
-- If the UI does not launch, run `fix_pyqt.bat`.
-- If OCR fails, run `diagnose.bat`.
-- If PaddleOCR behaves strangely after dependency changes, run `repair_paddleocr.bat`.
-- If setup building fails with an Inno Setup error, install Inno Setup 6 and run `build_setup.bat` again.
+- **The app doesn't open after setup**: start `Chinese Screen OCR.bat` again; if it fails, the setup window opens with the reason.
+- **Setup says the folder path has special characters**: move the folder somewhere simple, such as `C:\ChineseScreenOCR`.
+- Logs and saved data are in `%APPDATA%\ChineseScreenOCR` (`setup.log`, `ocr_app.log`, `saved_words.json`).
 
-## Data Files
+## Project layout
 
-Runtime settings and saved words are stored under the user's AppData folder. Old root-level `config.json` and `saved_words.json` files are still supported for migration.
+```text
+Chinese Screen OCR.bat   start here
+app\                     the application (Python), dictionaries and the setup script (launcher.ps1)
+app\requirements.txt     exact library versions the setup installs
+examples\                images for this README
+```
 
 ## Credits
 
-- PaddleOCR for Chinese OCR.
-- CC-CEDICT for Chinese-English dictionary data, attributed to MDBG / CC-CEDICT contributors under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
-- Jieba and pypinyin for segmentation and pinyin support.
+- [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) for Chinese OCR.
+- CC-CEDICT dictionary data by MDBG and the CC-CEDICT contributors, under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+- jieba and pypinyin for word segmentation and pinyin.

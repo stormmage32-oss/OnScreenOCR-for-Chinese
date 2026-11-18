@@ -1,23 +1,20 @@
 __pycache__/
 *.py[cod]
-*$py.class
 *.log
 
-# Local environments
+# Created by "Chinese Screen OCR.bat" on first start
 .venv/
-.build-venv/
+.runtime/
 
-# Build outputs
-build/
-dist/
-*.exe
-*.zip
-
-# Runtime user data
+# Runtime user data (normally in %APPDATA%\ChineseScreenOCR; old copies may sit here)
 config.json
 saved_words.json
 saved_words.txt
 anki_export.csv
 *.bak
-.DS_Store
-installer_output/
+
+# Old build outputs
+build/
+dist/
+*.exe
+*.zip

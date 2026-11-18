@@ -1,4 +1,3 @@
-import sys
 import keyboard
 import logging
 from PyQt5 import sip

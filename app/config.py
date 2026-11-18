@@ -11,7 +11,6 @@ LEGACY_CONFIG_FILE = install_dir_path("config.json")
 
 def load_config():
     defaults = {
-        "hotkey": "alt+s",
         "pinyin_hotkey": "alt+p",
         "seamless_hotkey": "alt+shift+s",
         "live_hotkey": "alt+l",
