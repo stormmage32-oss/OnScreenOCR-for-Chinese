@@ -9,8 +9,8 @@ A Windows tool for reading Chinese text anywhere on the screen: games, manga, vi
 
 The first start opens a setup window that shows each step and a log while it installs everything. It needs an internet connection and takes a few minutes (about 400 MB to download). After that, the same file starts the app directly.
 
-- If Python 3.12 isn't installed, setup downloads it from python.org into this folder. Nothing is installed system-wide, and no administrator rights are needed.
-- Everything lives in this folder (`.venv` and `.runtime`). To uninstall, delete the folder.
+- If Python 3.12 isn't installed, setup installs it from python.org for the current Windows user (no administrator rights needed). It appears in Windows' installed apps like any Python install.
+- Everything else lives in this folder (`.venv`). To uninstall the app, delete the folder.
 - If setup stops, the window shows why. **Try again** continues where it left off; **Open log file** opens the full log.
 
 Requirements: Windows 10 or 11, 64-bit.

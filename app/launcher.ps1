@@ -3,12 +3,12 @@
 # Started by "Chinese Screen OCR.bat". When the environment is ready it starts the
 # app straight away without showing anything. Otherwise it opens a small setup
 # window that shows progress and a log while it:
-#   1. finds Python 3.12 (64-bit), or downloads it from python.org into .runtime\
+#   1. finds Python 3.12 (64-bit), or installs it for this Windows user from python.org
 #   2. creates the virtual environment .venv\
 #   3. installs the pinned packages from app\requirements.txt
 #   4. checks the installed versions and imports
 #   5. loads the OCR engine once (its models ship in app\models)
-# and then starts the app. Nothing outside this folder is changed.
+# and then starts the app. Apart from that Python install, everything stays in this folder.
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
@@ -211,12 +211,29 @@ $worker = {
         return $null
     }
 
+    # Python 3.12 (64-bit) installs registered with Windows (PEP 514), as
+    # @{ Exe = <python.exe path>; PerUser = <bool> }. The python.org installer
+    # writes these keys, also for installs in custom folders.
+    function Get-RegisteredPython {
+        foreach ($hive in @('HKCU:', 'HKLM:')) {
+            $key = "$hive\Software\Python\PythonCore\3.12\InstallPath"
+            if (-not (Test-Path $key)) { continue }
+            $item = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue
+            if (-not $item) { continue }
+            $exe = $null
+            if ($item.PSObject.Properties['ExecutablePath']) { $exe = $item.ExecutablePath }
+            elseif ($item.PSObject.Properties['(default)']) { $exe = Join-Path $item.'(default)' 'python.exe' }
+            if ($exe) { @{ Exe = $exe; PerUser = ($hive -eq 'HKCU:') } }
+        }
+    }
+
     function Find-Python {
         $candidates = @(
-            (Join-Path $p.Runtime 'python\python.exe'),
             (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'),
-            (Join-Path $env:ProgramFiles 'Python312\python.exe')
+            (Join-Path $env:ProgramFiles 'Python312\python.exe'),
+            (Join-Path $p.Runtime 'python\python.exe')   # where older versions of this setup put it
         )
+        $candidates += @(Get-RegisteredPython | ForEach-Object { $_.Exe })
         foreach ($c in $candidates) { $found = Test-Python $c; if ($found) { return $found } }
         $py = Get-Command py.exe -ErrorAction SilentlyContinue
         if ($py) {
@@ -291,16 +308,36 @@ $worker = {
                     Fail "The downloaded Python installer is not signed by the Python Software Foundation ($($sig.Status))."
                 }
                 Log 'Installer signature: Python Software Foundation (valid)'
-                Send 'status' 'Installing Python 3.12 into this folder' $null
                 Send 'progress' $null -1
-                $target = Join-Path $p.Runtime 'python'
-                $installArgs = @('/quiet', 'InstallAllUsers=0', "`"TargetDir=$target`"", 'PrependPath=0', 'Include_launcher=0',
+                $installLog = Join-Path (Split-Path $p.SetupLog -Parent) 'python-install.log'
+
+                # A per-user 3.12 that is still registered but whose folder was deleted
+                # makes the installer believe it is installed: it exits at once and
+                # installs nothing. Remove that registration first.
+                if (@(Get-RegisteredPython | Where-Object { $_.PerUser }).Count -gt 0) {
+                    Send 'status' 'Removing a broken Python 3.12 registration' $null
+                    Log 'A registered Python 3.12 is missing or broken; uninstalling its registration first'
+                    $un = Start-Process -FilePath $installer -ArgumentList @('/quiet', '/uninstall', '/log', "`"$installLog`"") -Wait -PassThru
+                    Log "Uninstall exit code $($un.ExitCode)"
+                }
+
+                # Standard per-user location (no administrator rights needed). It stays
+                # usable when this folder is deleted or downloaded again.
+                Send 'status' 'Installing Python 3.12 (for this Windows user)' $null
+                $installArgs = @('/quiet', 'InstallAllUsers=0', 'PrependPath=0', 'Include_launcher=0',
                                  'InstallLauncherAllUsers=0', 'Include_test=0', 'Include_doc=0', 'Include_tcltk=0',
-                                 'Shortcuts=0', 'AssociateFiles=0', 'Include_pip=1')
+                                 'Shortcuts=0', 'AssociateFiles=0', 'Include_pip=1', '/log', "`"$installLog`"")
                 $proc = Start-Process -FilePath $installer -ArgumentList $installArgs -Wait -PassThru
                 Remove-Item $installer -ErrorAction SilentlyContinue
-                $base = Test-Python (Join-Path $target 'python.exe')
-                if (-not $base) { Fail "Python could not be installed (installer exit code $($proc.ExitCode))." }
+                $base = Find-Python
+                if (-not $base) {
+                    if (Test-Path $installLog) {
+                        Log '--- end of the Python installer log ---'
+                        Get-Content -Path $installLog -Tail 25 | ForEach-Object { Log $_ }
+                    }
+                    Fail ("Python 3.12 could not be installed (installer exit code $($proc.ExitCode)). " +
+                          'Install Python 3.12 from python.org yourself, then start the app again.')
+                }
                 Log "Installed $base"
             }
         }
@@ -365,7 +402,6 @@ $worker = {
     catch {
         $msg = $_.Exception.Message
         Log "ERROR: $msg"
-        if ($_.InvocationInfo) { Log $_.InvocationInfo.PositionMessage }
         Send 'error' $msg $null
     }
 }
