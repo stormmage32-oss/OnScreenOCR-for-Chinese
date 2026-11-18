@@ -2,10 +2,13 @@ import os
 import json
 import logging
 import datetime
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QListWidget, 
-                             QPushButton, QFrame, QLabel, QScrollArea, QWidget, QListWidgetItem, QApplication)
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont
+import html
+from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QListWidget, QPushButton,
+                             QFrame, QLabel, QScrollArea, QListWidgetItem, QApplication, QStackedWidget,
+                             QStyledItemDelegate, QStyle, QShortcut, QMessageBox)
+from PyQt5.QtCore import Qt, QSize, QRect, QRectF, pyqtSignal
+from PyQt5.QtGui import QFont, QFontMetrics, QPainter, QColor, QKeySequence
+from theme import BASE_QSS, BG, SURFACE, BORDER, TEXT, MUTED, FAINT, ACCENT, CJK_FONT
 from app_paths import install_dir_path, user_data_path
 
 logger = logging.getLogger("OCRApp")
@@ -83,139 +86,286 @@ def save_word(text: str, py: str, meanings: str = ''):
         logger.error(f"Error saving word: {e}")
         return False
 
+
+# ---------------------------------------------------------------------------
+# Notebook window
+# ---------------------------------------------------------------------------
+
+ROLE_INDEX = Qt.UserRole
+ROLE_WORD = Qt.UserRole + 1
+ROLE_PINYIN = Qt.UserRole + 2
+ROLE_DATE = Qt.UserRole + 3
+
+NOTEBOOK_QSS = BASE_QSS + f"""
+QDialog {{ background: {BG}; }}
+QLabel#title {{ font-size: 18px; font-weight: 600; }}
+QLabel#count {{ color: {MUTED}; font-size: 12px; }}
+QListWidget {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 6px; outline: none; padding: 4px; }}
+QFrame#detail {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 6px; }}
+QLabel#word {{ font-family: "{CJK_FONT}"; font-size: 40px; }}
+QLabel#pinyin {{ color: {ACCENT}; font-size: 17px; }}
+QLabel#fieldLabel {{ color: {MUTED}; font-size: 11px; font-weight: 600; }}
+QLabel#meaning {{ font-size: 13px; }}
+QLabel#meta {{ color: {FAINT}; font-size: 11px; }}
+QLabel#empty {{ color: {MUTED}; font-size: 13px; }}
+QFrame#divider {{ background: #EDEDED; border: none; max-height: 1px; min-height: 1px; }}
+"""
+
+
+class WordItemDelegate(QStyledItemDelegate):
+    """Two-line row: hanzi on top, pinyin below, saved date on the right."""
+
+    ROW_H = 54
+
+    def sizeHint(self, option, index):
+        return QSize(0, self.ROW_H)
+
+    def paint(self, p, option, index):
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        r = option.rect.adjusted(0, 1, 0, -1)
+        selected = option.state & QStyle.State_Selected
+        hover = option.state & QStyle.State_MouseOver
+        if selected or hover:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#EAF2FB" if selected else "#F5F5F5"))
+            p.drawRoundedRect(QRectF(r), 4, 4)
+        if selected:
+            p.setBrush(QColor(ACCENT))
+            p.drawRoundedRect(QRectF(r.left(), r.top() + 14, 3, r.height() - 28), 1.5, 1.5)
+
+        left = r.left() + 14
+        date = index.data(ROLE_DATE) or ""
+        f_date = QFont("Segoe UI"); f_date.setPixelSize(11)
+        fm_date = QFontMetrics(f_date)
+        date_w = fm_date.horizontalAdvance(date) if date else 0
+        text_w = r.width() - 28 - (date_w + 12 if date else 0)
+
+        f_word = QFont(CJK_FONT); f_word.setPixelSize(16)
+        fm = QFontMetrics(f_word)
+        p.setFont(f_word); p.setPen(QColor(TEXT))
+        p.drawText(QRect(left, r.top() + 7, text_w, 22), Qt.AlignLeft | Qt.AlignVCenter,
+                   fm.elidedText(index.data(ROLE_WORD) or "", Qt.ElideRight, text_w))
+
+        f_py = QFont("Segoe UI"); f_py.setPixelSize(12)
+        fm_py = QFontMetrics(f_py)
+        p.setFont(f_py); p.setPen(QColor(MUTED))
+        p.drawText(QRect(left, r.top() + 29, text_w, 18), Qt.AlignLeft | Qt.AlignVCenter,
+                   fm_py.elidedText(index.data(ROLE_PINYIN) or "", Qt.ElideRight, text_w))
+
+        if date:
+            p.setFont(f_date); p.setPen(QColor(FAINT))
+            p.drawText(QRect(r.right() - 14 - date_w, r.top() + 7, date_w, 22),
+                       Qt.AlignRight | Qt.AlignVCenter, date)
+        p.restore()
+
+
+def _split_meanings(text):
+    text = (text or "").strip()
+    if not text:
+        return []
+    for sep in (" · ", "/", ";"):
+        if sep in text:
+            return [m.strip() for m in text.split(sep) if m.strip()]
+    return [text]
+
+
 class WordNotebookWindow(QDialog):
+    words_changed = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("My Vocabulary Notebook")
-        self.resize(750, 500)
-        self.setStyleSheet(
-            "QDialog { background: #FAF4EB; color: #4A3F35; }"
-            "QLineEdit { background: #FAF4EB; color: #4A3F35; border: 1px solid #D4C5B0; border-radius: 6px; padding: 6px 10px; font-size: 13px; }"
-            "QListWidget { background: #FAF4EB; color: #4A3F35; border: 1px solid #D4C5B0; border-radius: 8px; padding: 5px; font-size: 13px; }"
-            "QListWidget::item { border-bottom: 1px solid #EADCC9; padding: 8px; border-radius: 4px; }"
-            "QListWidget::item:selected { background: #EADCC9; color: #4A3F35; }"
-            "QListWidget::item:hover { background: #F4EFE6; }"
-            "QPushButton { background: #EADCC9; color: #4A3F35; border: 1px solid #C4B29B; border-radius: 6px; padding: 6px 12px; font-size: 12px; }"
-            "QPushButton:hover { background: #DDCBB6; }"
-        )
+        self.setWindowTitle("Saved Words")
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint
+                            | Qt.WindowMinMaxButtonsHint)
+        self.resize(820, 540)
+        self.setMinimumSize(640, 420)
+        self.setStyleSheet(NOTEBOOK_QSS)
         self.words_data = []
         self._init_ui()
         self.load_words()
 
     def _init_ui(self):
-        main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(15, 15, 15, 15)
-        main_layout.setSpacing(15)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 20)
+        root.setSpacing(14)
 
-        left_layout = QVBoxLayout()
-        left_layout.setSpacing(10)
+        # Toolbar
+        bar = QHBoxLayout(); bar.setSpacing(8)
+        title = QLabel("Saved words"); title.setObjectName("title")
+        self.lbl_count = QLabel(); self.lbl_count.setObjectName("count")
+        bar.addWidget(title); bar.addSpacing(6)
+        bar.addWidget(self.lbl_count, 0, Qt.AlignVCenter)
+        bar.addStretch()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search Word, Pinyin or Meaning...")
+        self.search_input.setPlaceholderText("Search hanzi, pinyin or meaning")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.setFixedWidth(240)
         self.search_input.textChanged.connect(self.filter_words)
-        left_layout.addWidget(self.search_input)
-
-        self.list_widget = QListWidget()
-        self.list_widget.itemSelectionChanged.connect(self.on_selection_changed)
-        left_layout.addWidget(self.list_widget)
-
-        left_buttons = QHBoxLayout()
-        self.btn_export = QPushButton("Export to Anki")
-        self.btn_export.setStyleSheet("QPushButton { background: #6B8E4E; color: #FFF8F0; font-weight: bold; border: none; } QPushButton:hover { background: #7DA05E; }")
+        bar.addWidget(self.search_input)
+        self.btn_export = QPushButton("Export to Anki"); self.btn_export.setObjectName("btn")
+        self.btn_export.setToolTip("Save a CSV (hanzi, pinyin, meaning) you can import into Anki")
         self.btn_export.clicked.connect(self.export_anki)
-        left_buttons.addWidget(self.btn_export)
-
-        self.btn_clear_all = QPushButton("Clear All")
-        self.btn_clear_all.setStyleSheet("QPushButton { background: #A8554F; color: #FFF8F0; font-weight: bold; border: none; } QPushButton:hover { background: #B9665F; }")
+        bar.addWidget(self.btn_export)
+        self.btn_clear_all = QPushButton("Clear all"); self.btn_clear_all.setObjectName("btnDanger")
         self.btn_clear_all.clicked.connect(self.clear_all_words)
-        left_buttons.addWidget(self.btn_clear_all)
+        bar.addWidget(self.btn_clear_all)
+        root.addLayout(bar)
 
-        left_layout.addLayout(left_buttons)
-        main_layout.addLayout(left_layout, stretch=2)
+        body = QHBoxLayout(); body.setSpacing(12)
 
-        self.right_frame = QFrame()
-        self.right_frame.setStyleSheet("QFrame { background: #F4EFE6; border: 1px solid #D4C5B0; border-radius: 10px; }")
-        right_layout = QVBoxLayout(self.right_frame)
-        right_layout.setContentsMargins(18, 18, 18, 18)
-        right_layout.setSpacing(12)
+        self.list_stack = QStackedWidget()
+        self.list_widget = QListWidget()
+        self.list_widget.setItemDelegate(WordItemDelegate(self.list_widget))
+        self.list_widget.setMouseTracking(True)
+        self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list_widget.setUniformItemSizes(True)
+        self.list_widget.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self.list_widget.itemSelectionChanged.connect(self.on_selection_changed)
+        self.lbl_empty = QLabel(); self.lbl_empty.setObjectName("empty")
+        self.lbl_empty.setAlignment(Qt.AlignCenter); self.lbl_empty.setWordWrap(True)
+        empty_box = QFrame(); empty_box.setObjectName("detail")
+        el = QVBoxLayout(empty_box); el.setContentsMargins(24, 24, 24, 24); el.addWidget(self.lbl_empty)
+        self.list_stack.addWidget(self.list_widget)
+        self.list_stack.addWidget(empty_box)
+        body.addWidget(self.list_stack, 5)
 
-        self.lbl_word = QLabel("Word")
-        self.lbl_word.setFont(QFont("Microsoft YaHei", 28, QFont.Bold))
-        self.lbl_word.setStyleSheet("color: #4A3F35; border: none; background: transparent;")
-        self.lbl_word.setAlignment(Qt.AlignCenter)
-        right_layout.addWidget(self.lbl_word)
-
-        self.lbl_pinyin = QLabel("Pinyin")
-        self.lbl_pinyin.setFont(QFont("Arial", 14, QFont.Bold))
-        self.lbl_pinyin.setStyleSheet("color: #8B6914; border: none; background: transparent;")
-        self.lbl_pinyin.setAlignment(Qt.AlignCenter)
-        right_layout.addWidget(self.lbl_pinyin)
-
-        self.lbl_meaning = QLabel("Meaning")
-        self.lbl_meaning.setFont(QFont("Arial", 12))
-        self.lbl_meaning.setStyleSheet("color: #4A3F35; border: none; background: transparent;")
-        self.lbl_meaning.setAlignment(Qt.AlignCenter)
+        self.right_frame = QFrame(); self.right_frame.setObjectName("detail")
+        rl = QVBoxLayout(self.right_frame)
+        rl.setContentsMargins(24, 20, 24, 18)
+        rl.setSpacing(4)
+        self.lbl_word = QLabel(); self.lbl_word.setObjectName("word")
+        self.lbl_word.setWordWrap(True)
+        self.lbl_word.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.lbl_pinyin = QLabel(); self.lbl_pinyin.setObjectName("pinyin")
+        self.lbl_pinyin.setWordWrap(True)
+        self.lbl_pinyin.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        rl.addWidget(self.lbl_word)
+        rl.addWidget(self.lbl_pinyin)
+        rl.addSpacing(14)
+        div = QFrame(); div.setObjectName("divider"); rl.addWidget(div)
+        rl.addSpacing(12)
+        lbl_m = QLabel("MEANING"); lbl_m.setObjectName("fieldLabel"); rl.addWidget(lbl_m)
+        rl.addSpacing(4)
+        self.lbl_meaning = QLabel(); self.lbl_meaning.setObjectName("meaning")
         self.lbl_meaning.setWordWrap(True)
-        right_layout.addWidget(self.lbl_meaning)
-
-        right_layout.addStretch()
-
-        self.btn_copy = QPushButton("Copy Text")
+        self.lbl_meaning.setTextFormat(Qt.RichText)
+        self.lbl_meaning.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.lbl_meaning.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet(f"QScrollArea, QScrollArea > QWidget > QWidget {{ background: {SURFACE}; }}")
+        scroll.setWidget(self.lbl_meaning)
+        rl.addWidget(scroll, 1)
+        rl.addSpacing(8)
+        foot = QHBoxLayout(); foot.setSpacing(8)
+        self.lbl_meta = QLabel(); self.lbl_meta.setObjectName("meta")
+        foot.addWidget(self.lbl_meta); foot.addStretch()
+        self.btn_copy = QPushButton("Copy"); self.btn_copy.setObjectName("btn")
+        self.btn_copy.setToolTip("Copy word, pinyin and meaning (Ctrl+C)")
         self.btn_copy.clicked.connect(self.copy_current_word)
-        right_layout.addWidget(self.btn_copy)
-
-        self.btn_delete = QPushButton("Delete This Word")
-        self.btn_delete.setStyleSheet("QPushButton { background: #D98880; color: #FFF; border: none; } QPushButton:hover { background: #E6B0AA; }")
+        self.btn_delete = QPushButton("Delete"); self.btn_delete.setObjectName("btnDanger")
+        self.btn_delete.setToolTip("Delete this word (Del)")
         self.btn_delete.clicked.connect(self.delete_current_word)
-        right_layout.addWidget(self.btn_delete)
+        foot.addWidget(self.btn_copy); foot.addWidget(self.btn_delete)
+        rl.addLayout(foot)
+        body.addWidget(self.right_frame, 6)
 
-        main_layout.addWidget(self.right_frame, stretch=3)
+        root.addLayout(body, 1)
+
+        QShortcut(QKeySequence.Delete, self.list_widget, self.delete_current_word)
+        QShortcut(QKeySequence.Copy, self.list_widget, self.copy_current_word)
+        QShortcut(QKeySequence.Find, self, self.search_input.setFocus)
+
+    # ---------------------------------------------------------------- data
 
     def load_words(self):
         self.words_data = migrate_and_load_saved_words()
         self.filter_words(self.search_input.text())
 
-    def filter_words(self, text):
+    def _selected_index(self):
+        items = self.list_widget.selectedItems()
+        return items[0].data(ROLE_INDEX) if items else None
+
+    def filter_words(self, text, keep_row=0):
         self.list_widget.clear()
-        text = text.lower()
-        for i, w in enumerate(self.words_data):
-            if text in w['word'].lower() or text in w['pinyin'].lower() or text in w['meanings'].lower():
-                item = QListWidgetItem(f"{w['word']}  ({w['pinyin']})")
-                item.setData(Qt.UserRole, i)
-                self.list_widget.addItem(item)
-        
-        if self.list_widget.count() > 0:
-            self.list_widget.setCurrentRow(0)
+        text = text.lower().strip()
+        # Newest first.
+        for i in range(len(self.words_data) - 1, -1, -1):
+            w = self.words_data[i]
+            word, py, mean = w.get('word', ''), w.get('pinyin', ''), w.get('meanings', '')
+            if text and not (text in word.lower() or text in py.lower() or text in mean.lower()):
+                continue
+            item = QListWidgetItem()
+            item.setData(ROLE_INDEX, i)
+            item.setData(ROLE_WORD, word)
+            item.setData(ROLE_PINYIN, py)
+            item.setData(ROLE_DATE, (w.get('timestamp') or '')[:10])
+            self.list_widget.addItem(item)
+
+        total = len(self.words_data)
+        shown = self.list_widget.count()
+        self.lbl_count.setText(f"{shown} of {total}" if text else f"{total} word" + ("" if total == 1 else "s"))
+        self.btn_export.setEnabled(total > 0)
+        self.btn_clear_all.setEnabled(total > 0)
+
+        if shown:
+            self.list_stack.setCurrentIndex(0)
+            self.list_widget.setCurrentRow(min(keep_row, shown - 1))
         else:
-            self.lbl_word.setText("-")
-            self.lbl_pinyin.setText("-")
-            self.lbl_meaning.setText("Not Found")
+            self.list_stack.setCurrentIndex(1)
+            self.lbl_empty.setText("No matches." if total else
+                                   "No saved words yet.\n\nAfter a scan, click a word and save it. "
+                                   "It will show up here.")
+            self._show_word(None)
+
+    def _show_word(self, w):
+        has = w is not None
+        self.right_frame.setVisible(has)
+        if not has:
+            return
+        self.lbl_word.setText(w.get('word', ''))
+        self.lbl_pinyin.setText(w.get('pinyin', ''))
+        meanings = _split_meanings(w.get('meanings', ''))
+        if meanings:
+            rows = "".join(
+                f"<tr><td style='color:{FAINT};padding:0 10px 6px 0;'>{n}</td>"
+                f"<td style='padding-bottom:6px;'>{html.escape(m)}</td></tr>"
+                for n, m in enumerate(meanings, 1))
+            self.lbl_meaning.setText(f"<table cellspacing='0'>{rows}</table>")
+        else:
+            self.lbl_meaning.setText(f"<span style='color:{FAINT};'>No meaning saved.</span>")
+        ts = w.get('timestamp', '')
+        self.lbl_meta.setText(f"Saved {ts}" if ts else "")
 
     def on_selection_changed(self):
-        items = self.list_widget.selectedItems()
-        if not items:
-            return
-        idx = items[0].data(Qt.UserRole)
-        w = self.words_data[idx]
-        self.lbl_word.setText(w['word'])
-        self.lbl_pinyin.setText(w['pinyin'])
-        self.lbl_meaning.setText(w['meanings'])
+        idx = self._selected_index()
+        if idx is not None:
+            self._show_word(self.words_data[idx])
 
     def copy_current_word(self):
-        items = self.list_widget.selectedItems()
-        if items:
-            idx = items[0].data(Qt.UserRole)
+        idx = self._selected_index()
+        if idx is not None:
             w = self.words_data[idx]
             QApplication.clipboard().setText(f"{w['word']} [{w['pinyin']}] : {w['meanings']}")
 
     def delete_current_word(self):
-        items = self.list_widget.selectedItems()
-        if items:
-            idx = items[0].data(Qt.UserRole)
-            del self.words_data[idx]
-            self._save_to_disk()
-            self.filter_words(self.search_input.text())
+        idx = self._selected_index()
+        if idx is None:
+            return
+        row = self.list_widget.currentRow()
+        del self.words_data[idx]
+        self._save_to_disk()
+        self.filter_words(self.search_input.text(), keep_row=row)
 
     def clear_all_words(self):
+        if not self.words_data:
+            return
+        n = len(self.words_data)
+        ok = QMessageBox.question(self, "Clear all words",
+                                  f"Delete all {n} saved words? This cannot be undone.",
+                                  QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
+        if ok != QMessageBox.Yes:
+            return
         self.words_data.clear()
         self._save_to_disk()
         self.filter_words("")
@@ -227,6 +377,7 @@ class WordNotebookWindow(QDialog):
                 json.dump(self.words_data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"Error saving to disk: {e}")
+        self.words_changed.emit()
 
     def export_anki(self):
         if not self.words_data: return
@@ -236,8 +387,9 @@ class WordNotebookWindow(QDialog):
                 for w in self.words_data:
                     clean_meaning = w['meanings'].replace('"', '""')
                     f.write(f"\"{w['word']}\",\"{w['pinyin']}\",\"{clean_meaning}\"\n")
-            
+
             import subprocess
             subprocess.Popen(f'explorer /select,"{export_path}"')
         except Exception as e:
             logger.error(f"Error exporting Anki CSV: {e}")
+            QMessageBox.warning(self, "Export failed", str(e))

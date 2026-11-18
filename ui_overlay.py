@@ -11,8 +11,9 @@ from PyQt5.QtGui import QFont, QFontMetrics, QColor, QBrush, QPen, QImage, QPixm
 
 from dictionary import lookup_hsk, HSK_COLORS, get_pinyin, get_char_weight
 from word_notebook import save_word
-from ui_components import HoverTooltip, DetailPopup, _clamp_popup
+from ui_components import HoverTooltip, DetailPopup, _clamp_popup, matches_save_key, save_entry
 from screens import scale_results
+from theme import BASE_QSS, BG, SURFACE, BORDER, TEXT, MUTED
 
 logger = logging.getLogger("OCRApp")
 
@@ -212,13 +213,13 @@ class OCRCanvas(QLabel):
                 if ly < 0: ly = y + h + 4
                 lx = x
                 if lx + tw > self.width(): lx = self.width() - tw - 4
-                p.setBrush(QBrush(QColor(250, 244, 235, 230))); p.setPen(Qt.NoPen)
-                p.drawRoundedRect(lx, ly, tw, th, 5, 5)
-                p.setPen(QColor(74, 63, 53)); p.drawText(lx+6, ly+th-6, txt)
+                p.setBrush(QBrush(QColor(255, 255, 255, 240))); p.setPen(QPen(QColor(BORDER), 1))
+                p.drawRoundedRect(lx, ly, tw, th, 4, 4)
+                p.setPen(QColor(TEXT)); p.drawText(lx+6, ly+th-6, txt)
                 
         if self.is_dragging and self.drag_rect.isValid():
-            p.setBrush(QBrush(QColor(192, 139, 92, 60)))
-            p.setPen(QPen(QColor(192, 139, 92, 180), 1))
+            p.setBrush(QBrush(QColor(15, 108, 189, 40)))
+            p.setPen(QPen(QColor(15, 108, 189, 200), 1))
             p.drawRect(self.drag_rect)
             
         p.end(); self.setPixmap(pm)
@@ -345,6 +346,24 @@ class OCRCanvas(QLabel):
         _clamp_popup(popup, self)
         popup.show()
 
+    def save_hovered(self):
+        """Save the word under the mouse to the notebook (save-word key)."""
+        idx = self.hovered_idx
+        if idx < 0 or idx >= len(self.results):
+            return False
+        saved = save_entry(self.results[idx]['text'])
+        if self._hover_word_idx != idx or not self._hover_tooltip.isVisible():
+            self._hover_timer.stop()
+            self._hover_word_idx = idx
+            self._show_hover_tooltip()
+        self._hover_tooltip.mark_saved(saved)
+        return True
+
+    def keyPressEvent(self, e):
+        if matches_save_key(e) and self.save_hovered():
+            return
+        super().keyPressEvent(e)
+
     def leaveEvent(self, _):
         self._hover_timer.stop()
         self._hover_tooltip.dismiss()
@@ -368,7 +387,9 @@ class OverlayWindow(QMainWindow):
         else:
             flags |= Qt.Window
         self.setWindowFlags(flags)
-        self.setStyleSheet("QMainWindow{background:#FAF4EB;}")
+        self.setStyleSheet(BASE_QSS + f"QMainWindow{{background:{BG};}}"
+                           f"QFrame#controlBar{{background:{SURFACE};border:none;border-bottom:1px solid {BORDER};}}"
+                           f"QLabel#barInfo{{color:{MUTED};font-size:12px;}}")
         h, w = image.shape[:2]
         if screen_rect:
             self.setGeometry(screen_rect)
@@ -386,37 +407,34 @@ class OverlayWindow(QMainWindow):
     def _build(self, image, results):
         cw = QWidget(); self.setCentralWidget(cw)
         vb = QVBoxLayout(cw); vb.setContentsMargins(0,0,0,0); vb.setSpacing(0)
-        bar = QFrame(); bar.setFixedHeight(46)
+        bar = QFrame(); bar.setFixedHeight(46); bar.setObjectName("controlBar")
         self.control_bar = bar
-        bar.setStyleSheet("background:#F4EFE6;border-bottom:1px solid #D4C5B0;")
-        bl = QHBoxLayout(bar); bl.setContentsMargins(14,0,14,0)
-        info = QLabel(f"  {len(results)} texts found (PaddleOCR)   Click on boxes")
-        info.setStyleSheet("color:#4A3F35;font-size:12px;"); bl.addWidget(info); bl.addStretch()
+        bl = QHBoxLayout(bar); bl.setContentsMargins(16,0,16,0); bl.setSpacing(8)
+        info = QLabel(f"{len(results)} texts found. Click a box, or drag over several.")
+        info.setObjectName("barInfo"); bl.addWidget(info); bl.addStretch()
         
-        ca = QPushButton("Copy All")
-        ca.setStyleSheet(self._bs("#EADCC9", fg="#4A3F35", border="1px solid #C4B29B"))
+        ca = QPushButton("Copy all"); ca.setObjectName("btn")
         ca.clicked.connect(lambda: QApplication.clipboard().setText('\n'.join(r['text'] for r in results)))
         bl.addWidget(ca)
         
-        sa = QPushButton("Save All")
-        sa.setStyleSheet(self._bs("#6B8E4E", fg="#FFF8F0", bold=True))
+        sa = QPushButton("Save all"); sa.setObjectName("btn")
         def save_all():
             for r in results: save_word(r['text'], get_pinyin(r['text']))
-            sa.setText("Saved ✓"); sa.setEnabled(False)
+            sa.setText("Saved"); sa.setEnabled(False)
         sa.clicked.connect(save_all)
         bl.addWidget(sa)
         
-        ns = QPushButton("New Scan")
-        ns.setStyleSheet(self._bs("#C08B5C", fg="#FFF8F0", bold=True))
+        ns = QPushButton("New scan"); ns.setObjectName("btnAccent")
         ns.clicked.connect(self._yeni_tarama); bl.addWidget(ns)
         
         vb.addWidget(bar)
-        sc = QScrollArea(); sc.setStyleSheet("background:#FAF4EB;border:none;"); sc.setWidgetResizable(True)
+        sc = QScrollArea(); sc.setStyleSheet(f"QScrollArea{{background:{BG};border:none;}}"); sc.setWidgetResizable(True)
         if self.seamless:
             sc.setFrameShape(QFrame.NoFrame)
             sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             sc.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        inner = QWidget(); inner.setStyleSheet("background:#FAF4EB;")
+        inner = QWidget(); inner.setObjectName("inner")
+        inner.setStyleSheet(f"QWidget#inner{{background:{BG};}}")
         il = QVBoxLayout(inner); il.setAlignment(Qt.AlignCenter)
         if self.seamless:
             il.setContentsMargins(0, 0, 0, 0)
@@ -448,6 +466,8 @@ class OverlayWindow(QMainWindow):
         if self.seamless and event.key() == Qt.Key_Escape:
             self.close()
             return
+        if matches_save_key(event) and self.canvas.save_hovered():
+            return
         super().keyPressEvent(event)
 
     def closeEvent(self, event):
@@ -460,14 +480,6 @@ class OverlayWindow(QMainWindow):
         if self.main_win:
             self.main_win.show(); self.main_win.raise_()
 
-    @staticmethod
-    def _bs(bg, fg="#4A3F35", border=None, bold=False):
-        bw = "font-weight:bold;" if bold else ""
-        border_style = f"border:{border};" if border else "border:none;"
-        return (f"QPushButton{{background:{bg};color:{fg};{border_style}border-radius:7px;"
-                f"padding:5px 14px;font-size:12px;{bw}}}"
-                f"QPushButton:hover{{background:{bg}ee;}}"
-                f"QPushButton:disabled{{background:#E8DCCC;color:#B0A090;border:none;}}")
 
 class PinyinOverlayWindow(QWidget):
     def __init__(self, results: list, screen_rect: QRect, image=None, parent=None):

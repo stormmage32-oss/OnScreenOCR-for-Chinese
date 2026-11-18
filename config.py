@@ -18,7 +18,9 @@ def load_config():
         "live_region_hotkey": "alt+shift+l",
         "manga_mode": False,
         "deepl_enabled": False,
-        "deepl_api_key": ""
+        "deepl_api_key": "",
+        "deepl_always": False,
+        "save_word_key": "s"
     }
     load_path = CONFIG_FILE if os.path.exists(CONFIG_FILE) else LEGACY_CONFIG_FILE
     if os.path.exists(load_path):
